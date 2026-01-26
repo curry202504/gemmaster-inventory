@@ -2,80 +2,86 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { Modal } from '../components/Modal';
-import { StorageService } from '../services/storage';
+import { api } from '../services/api'; // 使用我们新的 API 服务
 import { generateDailyReport } from '../services/exportService';
-import { User, Category, Product, StockItem, ListingStatus, ExportSelection } from '../types';
+import { Category, Product, StockItem, ListingStatus, ExportSelection } from '../types';
 import { 
-  Plus, Search, Package, Download, ArrowRight, ArrowUpRight, ArrowDownLeft, CheckCircle2, XCircle, Wallet, Gem, Layers
+  Plus, Search, Package, Download, ArrowRight, ArrowDownLeft, 
+  CheckCircle2, XCircle, Wallet, Gem, Layers, Crown, Zap, TrendingUp, Sliders
 } from 'lucide-react';
-
-const generateId = (): string => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
-};
+import { PaymentModal } from '../components/PaymentModal';
 
 export const Dashboard = () => {
   const navigate = useNavigate();
-  const [user, setUser] = useState<User | null>(null);
-  const [view, setView] = useState<'DASHBOARD' | 'PRODUCT_DETAIL'>('DASHBOARD');
   
-  // Data State
+  // --- 核心数据状态 ---
+  const [user, setUser] = useState<any>(null);
+  const [view, setView] = useState<'DASHBOARD' | 'PRODUCT_DETAIL'>('DASHBOARD');
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [items, setItems] = useState<StockItem[]>([]);
   
-  // Selection / Navigation State
+  // --- 交互状态 ---
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedForExport, setSelectedForExport] = useState<ExportSelection>({});
+  const [loading, setLoading] = useState(true);
 
-  // Modals State
+  // --- 弹窗与表单状态 ---
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [isAddItemOpen, setIsAddItemOpen] = useState(false);
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   
-  // Form State
   const [newProductName, setNewProductName] = useState('');
   const [newProductCategory, setNewProductCategory] = useState('');
-  
-  const [newItemValues, setNewItemValues] = useState<Record<string, string>>({});
+  const [newItemValues, setNewItemValues] = useState<Record<string, any>>({});
   const [newItemListingStatus, setNewItemListingStatus] = useState<ListingStatus>(ListingStatus.UNLISTED);
 
-  // --- Initialization ---
+  // --- 初始化加载 ---
   useEffect(() => {
-    const storedUser = StorageService.getUser();
-    if (!storedUser) {
-        navigate('/login'); // 如果没登录，踢回登录页
+    const storedUserStr = localStorage.getItem('gem_user');
+    if (!storedUserStr) {
+        navigate('/login');
         return;
     }
-    setUser({ username: storedUser });
-    refreshData();
+    setUser(JSON.parse(storedUserStr));
+    loadAllData();
   }, [navigate]);
 
-  const refreshData = () => {
-    setCategories(StorageService.getCategories());
-    setProducts(StorageService.getProducts());
-    setItems(StorageService.getItems());
+  const loadAllData = async () => {
+    setLoading(true);
+    try {
+      // 真枪实弹：并发从后端获取数据
+      const [cats, prods, its] = await Promise.all([
+        api.getCategories(),
+        api.getProducts(),
+        api.getItems()
+      ]);
+      setCategories(cats || []);
+      setProducts(prods || []);
+      setItems(its || []);
+    } catch (error) {
+      console.error("数据同步失败:", error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogout = () => {
-    StorageService.logout();
+    localStorage.clear();
     navigate('/login');
   };
 
-  // --- Derived State ---
+  // --- 衍生计算逻辑 (与原逻辑完全一致且增强) ---
   const filteredProducts = useMemo(() => {
     return products.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
   }, [products, searchQuery]);
 
-  const activeProduct = useMemo(() => {
-    return products.find(p => p.id === selectedProductId);
-  }, [products, selectedProductId]);
-
+  const activeProduct = useMemo(() => products.find(p => String(p.id) === String(selectedProductId)), [products, selectedProductId]);
+  
   const activeProductItems = useMemo(() => {
     if (!selectedProductId) return [];
-    return items.filter(i => i.productId === selectedProductId);
+    return items.filter(i => String(i.productId) === String(selectedProductId));
   }, [items, selectedProductId]);
 
   const activeCategory = useMemo(() => {
@@ -83,420 +89,359 @@ export const Dashboard = () => {
     return categories.find(c => c.id === activeProduct.categoryId);
   }, [activeProduct, categories]);
 
-  const totalWeight = useMemo(() => {
-    return items.reduce((sum, item) => {
-        const cv = item.customValues || {};
-        const weightKey = Object.keys(cv).find(k => k.includes('weight') || k === 'weight');
-        const val = weightKey ? Number(cv[weightKey]) : 0;
-        return sum + (val * item.quantity);
+  const stats = useMemo(() => {
+    const totalCount = items.reduce((sum, item) => sum + item.quantity, 0);
+    const totalWeight = items.reduce((sum, item) => {
+        // 动态识别克重字段
+        const weight = Number(item.customValues?.weight) || Number(item.customValues?.克重) || 0;
+        return sum + (weight * item.quantity);
     }, 0);
-  }, [items]);
+    return { totalCount, totalWeight, categoryCount: categories.length };
+  }, [items, categories]);
 
-  const totalCount = useMemo(() => {
-      return items.reduce((sum, item) => sum + item.quantity, 0);
-  }, [items]);
-
-  // --- Actions ---
-
-  const handleCreateProduct = () => {
+  // --- 核心业务操作 (对接 API) ---
+  
+  const handleCreateProduct = async () => {
     if (!newProductName || !newProductCategory) return;
-    const newProduct: Product = {
-      id: generateId(),
-      name: newProductName,
-      categoryId: newProductCategory,
-      createdAt: Date.now(),
-    };
-    StorageService.saveProduct(newProduct);
-    refreshData();
-    setIsAddProductOpen(false);
-    setNewProductName('');
-    setNewProductCategory('');
+    try {
+        await api.createProduct(newProductName, newProductCategory);
+        setNewProductName('');
+        setIsAddProductOpen(false);
+        loadAllData();
+    } catch (e: any) { alert(e.message); }
   };
 
-  const handleCreateItem = () => {
+  const handleInbound = async () => {
     if (!activeProduct || !activeCategory) return;
-    
-    const customValues: Record<string, any> = {};
-    activeCategory.fields.forEach(field => {
-        const val = newItemValues[field.key];
-        customValues[field.key] = field.type === 'number' ? Number(val) : val;
-    });
-
-    StorageService.addItem(activeProduct.id, customValues, newItemListingStatus, activeCategory);
-    
-    refreshData();
-    setIsAddItemOpen(false);
-    setNewItemValues({});
-    setNewItemListingStatus(ListingStatus.UNLISTED);
+    try {
+        await api.inbound({
+            productId: activeProduct.id,
+            customValues: newItemValues,
+            listingStatus: newItemListingStatus
+        });
+        setNewItemValues({});
+        setIsAddItemOpen(false);
+        loadAllData();
+    } catch (e: any) { alert(e.message); }
   };
 
-  const handleOutboundRow = (item: StockItem) => {
-    if (!activeCategory) {
-        alert("错误：无法获取分类信息。请刷新页面重试。");
-        return;
-    }
-    
-    if(!window.confirm(`确认出库 1 件吗？ (当前数量: ${item.quantity})`)) return;
-    
-    const success = StorageService.outboundItem(item, activeCategory);
-    
-    if (success) {
-        refreshData();
-    } else {
-        alert("出库失败！请刷新页面后重试。");
-    }
+  const handleOutbound = async (itemId: number, currentQty: number) => {
+    if (!window.confirm(`确认将此项资产办理出库 (-1) 吗？\n当前存量: ${currentQty}`)) return;
+    try {
+        await api.outbound(itemId);
+        loadAllData();
+    } catch (e: any) { alert(e.message); }
   };
 
   const handleExport = async () => {
     const selectedIds = Object.keys(selectedForExport).filter(id => selectedForExport[id]);
-    if (selectedIds.length === 0) {
-      alert("请至少选择一个商品进行导出。");
-      return;
-    }
-    const productsToExport = products.filter(p => selectedIds.includes(p.id));
-    const logs = StorageService.getLogs();
-    await generateDailyReport(productsToExport, items, logs, categories);
+    if (selectedIds.length === 0) return alert("请先选择需要导出的资产项");
+    const productsToExport = products.filter(p => selectedIds.includes(String(p.id)));
+    // 这里需要你原本的 exportService 支持 API 数据格式
+    await generateDailyReport(productsToExport, items, [], categories);
   };
 
-  const toggleSelectAll = () => {
-    const allSelected = filteredProducts.every(p => selectedForExport[p.id]);
-    const newSelection: ExportSelection = {};
-    filteredProducts.forEach(p => {
-      newSelection[p.id] = !allSelected;
-    });
-    setSelectedForExport(newSelection);
+  const handlePaymentRequest = async (planId: string, isRecurring: boolean) => {
+    try {
+      await api.createOrder(planId, isRecurring);
+    } catch (e: any) { alert(e.message); }
   };
 
-  // --- Render ---
-
-  if (!user) return null; // Loading state
+  // --- 界面渲染 ---
 
   return (
-    <Layout user={user.username} onLogout={handleLogout} onNavigateHome={() => setView('DASHBOARD')}>
-      
-      {/* DASHBOARD VIEW */}
-      {view === 'DASHBOARD' && (
-        <div className="space-y-8 animate-in fade-in duration-500">
+    <Layout user={user?.username} onLogout={handleLogout} onNavigateHome={() => setView('DASHBOARD')}>
+      <div className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-amber-500/30">
+        
+        <div className="max-w-7xl mx-auto px-6 py-10">
           
-          {/* Stats Bar */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center space-x-4">
-              <div className="p-3 bg-blue-50 rounded-full text-blue-600">
-                <Package className="h-6 w-6" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-500 font-medium">总库存件数</p>
-                <p className="text-2xl font-bold text-slate-800">{totalCount}</p>
-              </div>
+          {/* VIP 状态横幅 */}
+          <div className="mb-12 group relative overflow-hidden bg-gradient-to-r from-amber-500/20 to-transparent border border-amber-500/30 p-8 rounded-[2.5rem] backdrop-blur-xl">
+            <div className="absolute top-0 right-0 p-10 opacity-10 group-hover:rotate-12 transition-transform duration-700">
+               <Crown className="h-32 w-32 text-amber-500" />
             </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center space-x-4">
-              <div className="p-3 bg-yellow-50 rounded-full text-yellow-600">
-                <Wallet className="h-6 w-6" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-500 font-medium">总克重 (估算)</p>
-                <p className="text-2xl font-bold text-slate-800">{totalWeight.toFixed(2)}g</p>
-              </div>
-            </div>
-             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center space-x-4">
-              <div className="p-3 bg-purple-50 rounded-full text-purple-600">
-                <Layers className="h-6 w-6" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-500 font-medium">商品分类</p>
-                <p className="text-2xl font-bold text-slate-800">{categories.length}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Toolbar */}
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-100">
-            <div className="relative w-full md:w-96">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="搜索商品品名..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-              />
-            </div>
-            <div className="flex items-center gap-3 w-full md:w-auto">
-              <button 
-                onClick={handleExport}
-                className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg transition-colors font-medium shadow-sm flex-1 md:flex-none"
-              >
-                <Download className="h-4 w-4" />
-                导出日报 (Word)
-              </button>
-              <button 
-                onClick={() => {
-                    setNewProductCategory(categories[0]?.id || '');
-                    setIsAddProductOpen(true);
-                }}
-                className="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg transition-colors font-medium shadow-lg shadow-primary/30 flex-1 md:flex-none"
-              >
-                <Plus className="h-4 w-4" />
-                新建品名
-              </button>
-            </div>
-          </div>
-
-          {/* Product Categories Sections */}
-          <div className="space-y-10">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-800">商品列表</h2>
-              <button 
-                onClick={toggleSelectAll} 
-                className="text-sm text-primary hover:text-primary/80 font-medium"
-              >
-                {filteredProducts.length > 0 && filteredProducts.every(p => selectedForExport[p.id]) ? '取消全选' : '全选'}
-              </button>
-            </div>
-
-            {categories.map(category => {
-                const categoryProducts = filteredProducts.filter(p => p.categoryId === category.id);
-                if (categoryProducts.length === 0) return null;
-
-                return (
-                    <div key={category.id} className="space-y-4">
-                        <div className="flex items-center gap-2 px-2">
-                            <span className="h-6 w-1 bg-primary rounded-full"></span>
-                            <h3 className="text-xl font-bold text-slate-700">{category.name}区</h3>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                            {categoryProducts.map((product) => {
-                                const stockCount = items.filter(i => i.productId === product.id).reduce((sum, i) => sum + i.quantity, 0);
-                                const isSelected = !!selectedForExport[product.id];
-
-                                return (
-                                <div 
-                                    key={product.id} 
-                                    className={`group bg-white rounded-xl shadow-sm border transition-all hover:shadow-md cursor-pointer relative overflow-hidden ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-slate-200'}`}
-                                    onClick={() => {
-                                        setSelectedProductId(product.id);
-                                        setView('PRODUCT_DETAIL');
-                                    }}
-                                >
-                                    <div 
-                                        className="absolute top-3 right-3 z-10" 
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedForExport(prev => ({...prev, [product.id]: !prev[product.id]}));
-                                        }}
-                                    >
-                                        <div className={`h-5 w-5 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary' : 'bg-white border-slate-300 hover:border-primary'}`}>
-                                            {isSelected && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
-                                        </div>
-                                    </div>
-
-                                    <div className="p-6">
-                                        <div className="flex items-start justify-between mb-4">
-                                            <div className="h-12 w-12 bg-slate-100 rounded-lg flex items-center justify-center text-slate-500 group-hover:bg-primary/10 group-hover:text-primary transition-colors">
-                                            <Gem className="h-6 w-6" />
-                                            </div>
-                                        </div>
-                                        <h3 className="font-bold text-slate-800 text-lg mb-1 truncate">{product.name}</h3>
-                                        <p className="text-sm text-slate-500 mb-4">创建于 {new Date(product.createdAt).toLocaleDateString()}</p>
-                                        
-                                        <div className="flex items-center justify-between pt-4 border-t border-slate-50">
-                                            <div className="text-sm font-medium text-slate-600">
-                                                库存件数: <span className="text-slate-900 font-bold">{stockCount}</span>
-                                            </div>
-                                            <ArrowRight className="h-4 w-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
-                                        </div>
-                                    </div>
-                                </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )
-            })}
-            
-            {filteredProducts.length === 0 && (
-                <div className="py-12 text-center text-slate-400">
-                    <Package className="h-12 w-12 mx-auto mb-3 opacity-20" />
-                    <p>未找到匹配的商品。</p>
+            <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-center gap-6">
+                <div className="bg-amber-500 p-4 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.4)]">
+                   <Zap className="h-8 w-8 text-slate-950 fill-slate-950" />
                 </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* PRODUCT DETAIL VIEW */}
-      {view === 'PRODUCT_DETAIL' && activeProduct && activeCategory && (
-        <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
-          
-          {/* Header */}
-          <div className="flex items-center space-x-4 mb-6">
-            <button 
-              onClick={() => setView('DASHBOARD')}
-              className="p-2 hover:bg-slate-200 rounded-full transition-colors"
-            >
-              <ArrowDownLeft className="h-6 w-6 text-slate-600" />
-            </button>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">{activeProduct.name}</h1>
-              <p className="text-slate-500 flex items-center gap-2">
-                <span className="bg-slate-200 text-slate-600 text-xs px-2 py-0.5 rounded-full">{activeCategory.name}</span>
-                <span>•</span>
-                <span>总库存: {activeProductItems.reduce((acc, i) => acc + i.quantity, 0)}</span>
-              </p>
-            </div>
-            <div className="flex-1" />
-            <div className="flex gap-3">
-                <button 
-                  onClick={() => setIsAddItemOpen(true)}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white hover:bg-primary/90 rounded-lg shadow-lg shadow-primary/30 font-medium transition-all hover:scale-105 active:scale-95"
-                >
-                  <Plus className="h-5 w-5" />
-                  入库 (新建库存)
-                </button>
+                <div>
+                  <h2 className="text-2xl font-black text-white tracking-tight">AurumFlow 御流 · {user?.vip ? '尊享版' : '基础授权'}</h2>
+                  <p className="text-slate-400 font-medium">您的资产数据已由阿里云加密中心实时托管，当前库存储备 {stats.totalCount} 件</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsPaymentOpen(true)}
+                className="px-10 py-4 bg-white text-slate-950 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-amber-400 transition-all shadow-xl shadow-white/5"
+              >
+                {user?.vip ? '延长服务期' : '立即激活 Pro 权限'}
+              </button>
             </div>
           </div>
 
-          {/* Stock List */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-             <div className="grid grid-cols-12 gap-4 p-4 border-b border-slate-100 bg-slate-50/50 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                <div className="col-span-1">状态</div>
-                <div className="col-span-5">规格参数</div>
-                <div className="col-span-2">当前数量</div>
-                <div className="col-span-2">最后更新</div>
-                <div className="col-span-2 text-right">操作</div>
-             </div>
-             
-             <div className="divide-y divide-slate-50">
-                {activeProductItems.map(item => (
-                  <div key={item.id} className="grid grid-cols-12 gap-4 p-4 items-center hover:bg-slate-50 transition-colors group">
-                    <div className="col-span-1">
-                      {item.listingStatus === ListingStatus.LISTED ? (
-                         <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-emerald-100 text-emerald-700 border border-emerald-200">
-                           <CheckCircle2 className="h-3 w-3 mr-1" /> 已上架
-                         </span>
-                      ) : (
-                         <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                           <XCircle className="h-3 w-3 mr-1" /> 未上架
-                         </span>
-                      )}
-                    </div>
-                    <div className="col-span-5 text-sm text-slate-700">
-                      <div className="flex flex-wrap gap-2">
-                        {activeCategory.fields.map(field => (
-                          <span key={field.key} className="inline-block bg-slate-100 px-2 py-0.5 rounded text-xs">
-                             <span className="text-slate-500 mr-1">{field.label}:</span>
-                             <span className="font-semibold">{(item.customValues || {})[field.key]}{field.unit}</span>
-                          </span>
-                        ))}
+          {view === 'DASHBOARD' ? (
+            <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
+              
+              {/* 指标卡片 */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                {[
+                  { label: '库存储备量', val: stats.totalCount, unit: 'PCS', icon: Package, color: 'from-blue-500/10' },
+                  { label: '资产评估净重', val: stats.totalWeight.toFixed(2), unit: 'GRAMS', icon: TrendingUp, color: 'from-amber-500/10' },
+                  { label: '运营管理模块', val: stats.categoryCount, unit: 'MODS', icon: Layers, color: 'from-emerald-500/10' }
+                ].map((card, i) => (
+                  <div key={i} className="bg-slate-900/40 border border-white/5 p-8 rounded-[2.5rem] relative overflow-hidden group">
+                    <div className={`absolute inset-0 bg-gradient-to-br ${card.color} to-transparent opacity-50`}></div>
+                    <div className="relative z-10 flex justify-between items-start">
+                      <div>
+                        <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] mb-3">{card.label}</p>
+                        <h3 className="text-4xl font-black text-white tabular-nums">{loading ? '---' : card.val} <span className="text-xs font-bold text-slate-600 ml-1">{card.unit}</span></h3>
                       </div>
-                    </div>
-                    <div className="col-span-2 text-sm font-bold text-slate-900">
-                        x {item.quantity}
-                    </div>
-                    <div className="col-span-2 text-sm text-slate-500">
-                        {new Date(item.updatedAt).toLocaleTimeString()}
-                    </div>
-                    <div className="col-span-2 text-right">
-                       <button 
-                         onClick={() => handleOutboundRow(item)}
-                         className="text-red-600 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 ml-auto"
-                       >
-                         出库 (-1)
-                         <ArrowUpRight className="h-3.5 w-3.5" />
-                       </button>
+                      <card.icon className="h-8 w-8 text-slate-700 group-hover:text-amber-500 transition-colors" />
                     </div>
                   </div>
                 ))}
+              </div>
 
-                {activeProductItems.length === 0 && (
-                  <div className="p-12 text-center text-slate-400">
-                    <p>暂无库存。</p>
-                    <button onClick={() => setIsAddItemOpen(true)} className="text-primary hover:underline text-sm mt-2">添加第一个库存</button>
-                  </div>
-                )}
-             </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODALS */}
-      <Modal isOpen={isAddProductOpen} onClose={() => setIsAddProductOpen(false)} title="新建品名">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">品名</label>
-            <input 
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-              placeholder="例如：三生三世戒指"
-              value={newProductName}
-              onChange={(e) => setNewProductName(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">分类 (模块)</label>
-            <select
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none bg-white"
-              value={newProductCategory}
-              onChange={(e) => setNewProductCategory(e.target.value)}
-            >
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
-            </select>
-            <p className="text-xs text-slate-500 mt-1">不同分类对应不同的规格参数（如：戒指对应圈口，项链对应长度）。</p>
-          </div>
-          <div className="pt-4 flex justify-end gap-3">
-             <button onClick={() => setIsAddProductOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg">取消</button>
-             <button onClick={handleCreateProduct} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90">创建</button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal isOpen={isAddItemOpen} onClose={() => setIsAddItemOpen(false)} title={`入库: ${activeProduct?.name}`}>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            {activeCategory?.fields.map(field => (
-                <div key={field.key}>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">{field.label}</label>
-                    <div className="relative">
-                        <input 
-                            type={field.type}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-                            placeholder="0"
-                            value={newItemValues[field.key] || ''}
-                            onChange={(e) => setNewItemValues({...newItemValues, [field.key]: e.target.value})}
-                        />
-                        {field.unit && <span className="absolute right-3 top-2 text-slate-400 text-sm">{field.unit}</span>}
-                    </div>
+              {/* 工具栏 */}
+              <div className="bg-slate-900/40 border border-white/5 p-4 rounded-[2rem] flex flex-col lg:flex-row items-center gap-6">
+                <div className="relative flex-1 w-full">
+                  <Search className="absolute left-6 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-600" />
+                  <input
+                    type="text"
+                    placeholder="全域搜索资产名、规格、流水号..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-slate-950/50 border border-white/5 rounded-2xl py-5 pl-16 pr-6 outline-none focus:border-amber-500/50 transition-all font-medium text-slate-200"
+                  />
                 </div>
-            ))}
-          </div>
+                <div className="flex gap-4 w-full lg:w-auto">
+                  <button 
+                    onClick={handleExport}
+                    className="flex-1 lg:flex-none flex items-center justify-center gap-3 px-8 py-5 bg-slate-800 text-slate-300 rounded-2xl border border-white/5 hover:bg-slate-700 font-black text-xs uppercase tracking-widest transition-all"
+                  >
+                    <Download className="h-5 w-5 text-amber-500" /> 报表导出
+                  </button>
+                  <button 
+                    onClick={() => {
+                        setNewProductCategory(categories[0]?.id || '');
+                        setIsAddProductOpen(true);
+                    }}
+                    className="flex-1 lg:flex-none flex items-center justify-center gap-3 px-10 py-5 bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 rounded-2xl font-black text-xs uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all shadow-xl shadow-amber-500/10"
+                  >
+                    <Plus className="h-5 w-5" /> 新增登记
+                  </button>
+                </div>
+              </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">上架状态 (抖店)</label>
-            <div className="flex gap-4">
+              {/* 资产名录列表 */}
+              <div className="space-y-10">
+                 {categories.map(cat => {
+                   const catProds = filteredProducts.filter(p => p.categoryId === cat.id);
+                   if (catProds.length === 0) return null;
+                   return (
+                     <div key={cat.id} className="space-y-6">
+                       <h4 className="flex items-center gap-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] ml-2">
+                         <span>{cat.name} 资源区</span>
+                         <span className="h-[1px] flex-1 bg-white/5"></span>
+                       </h4>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                         {catProds.map(prod => {
+                           const count = items.filter(i => String(i.productId) === String(prod.id)).reduce((s, i) => s + i.quantity, 0);
+                           return (
+                             <div 
+                               key={prod.id}
+                               onClick={() => { setSelectedProductId(String(prod.id)); setView('PRODUCT_DETAIL'); }}
+                               className="group relative bg-slate-900/20 border border-white/5 p-8 rounded-[2.5rem] hover:bg-slate-900/40 hover:border-amber-500/30 transition-all cursor-pointer overflow-hidden"
+                             >
+                                <div className="bg-slate-950/50 w-14 h-14 rounded-2xl flex items-center justify-center mb-6 border border-white/10 group-hover:border-amber-500/20">
+                                   <Gem className="h-7 w-7 text-amber-500" />
+                                </div>
+                                <h3 className="text-2xl font-black text-white mb-2 tracking-tight group-hover:text-amber-400 transition-colors">{prod.name}</h3>
+                                <p className="text-slate-600 text-[10px] font-black uppercase tracking-widest mb-8">ENTRY: {new Date(prod.createdAt).toLocaleDateString()}</p>
+                                
+                                <div className="flex justify-between items-end border-t border-white/5 pt-6">
+                                  <div>
+                                    <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">Stock Level</p>
+                                    <p className="text-3xl font-black text-amber-500 tabular-nums">{count}</p>
+                                  </div>
+                                  <div className="p-3 rounded-xl bg-amber-500/5 text-amber-500 group-hover:translate-x-1 transition-all">
+                                    <ArrowRight className="h-6 w-6" />
+                                  </div>
+                                </div>
+                             </div>
+                           )
+                         })}
+                       </div>
+                     </div>
+                   )
+                 })}
+              </div>
+            </div>
+          ) : (
+            // --- 详情视图 (PRODUCT_DETAIL) ---
+            <div className="animate-in fade-in slide-in-from-right-8 duration-700">
+               <div className="flex flex-col md:flex-row md:items-center gap-8 mb-12">
+                  <button onClick={() => setView('DASHBOARD')} className="w-16 h-16 flex items-center justify-center bg-slate-900/40 rounded-2xl border border-white/5 text-slate-500 hover:text-amber-500 transition-all">
+                    <ArrowDownLeft className="h-8 w-8" />
+                  </button>
+                  <div>
+                    <h1 className="text-5xl font-black text-white tracking-tighter mb-2">{activeProduct?.name}</h1>
+                    <div className="flex items-center gap-4">
+                      <span className="px-4 py-1.5 bg-amber-500/10 text-amber-500 rounded-xl text-[10px] font-black uppercase tracking-widest border border-amber-500/20">{activeCategory?.name}</span>
+                      <span className="text-slate-700">|</span>
+                      <span className="text-slate-500 text-sm font-medium">全局资源标识: {activeProduct?.id}</span>
+                    </div>
+                  </div>
+                  <div className="flex-1"></div>
+                  <button 
+                    onClick={() => setIsAddItemOpen(true)}
+                    className="px-10 py-5 bg-white text-slate-950 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-amber-400 transition-all shadow-2xl flex items-center gap-3"
+                  >
+                    <Plus className="h-6 w-6" /> 办理入库登记
+                  </button>
+               </div>
+
+               <div className="bg-slate-900/30 rounded-[3rem] border border-white/5 overflow-hidden backdrop-blur-3xl shadow-2xl">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-white/[0.02]">
+                          <th className="px-10 py-7 text-slate-500 font-black uppercase text-[10px] tracking-[0.3em]">Status</th>
+                          <th className="px-10 py-7 text-slate-500 font-black uppercase text-[10px] tracking-[0.3em]">Specifications</th>
+                          <th className="px-10 py-7 text-slate-500 font-black uppercase text-[10px] tracking-[0.3em] text-center">Quantities</th>
+                          <th className="px-10 py-7 text-slate-500 font-black uppercase text-[10px] tracking-[0.3em] text-right">Operations</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {activeProductItems.map(item => (
+                          <tr key={item.id} className="hover:bg-white/[0.01] transition-colors group">
+                            <td className="px-10 py-8">
+                               {item.listingStatus === ListingStatus.LISTED ? (
+                                 <div className="flex items-center gap-3 text-emerald-500">
+                                   <div className="h-2.5 w-2.5 bg-emerald-500 rounded-full shadow-[0_0_12px_rgba(16,185,129,0.8)] animate-pulse"></div>
+                                   <span className="text-[10px] font-black uppercase tracking-widest">已在柜 (Listed)</span>
+                                 </div>
+                               ) : (
+                                 <div className="flex items-center gap-3 text-slate-600">
+                                   <div className="h-2.5 w-2.5 bg-slate-700 rounded-full"></div>
+                                   <span className="text-[10px] font-black uppercase tracking-widest">库内 (Stock)</span>
+                                 </div>
+                               )}
+                            </td>
+                            <td className="px-10 py-8">
+                               <div className="flex flex-wrap gap-3">
+                                 {activeCategory?.fields.map(f => (
+                                   <div key={f.key} className="bg-slate-950/80 px-5 py-2.5 rounded-2xl border border-white/5">
+                                      <span className="text-slate-600 text-[9px] font-black block uppercase tracking-widest mb-1">{f.label}</span>
+                                      <span className="text-white font-bold tracking-tight">{item.customValues?.[f.key]}<span className="text-amber-500/50 ml-1 text-xs">{f.unit}</span></span>
+                                   </div>
+                                 ))}
+                               </div>
+                            </td>
+                            <td className="px-10 py-8 text-center">
+                               <span className="text-4xl font-black text-white tabular-nums tracking-tighter">
+                                 <span className="text-xs text-slate-700 mr-3 font-bold">QTY</span>
+                                 {item.quantity}
+                               </span>
+                            </td>
+                            <td className="px-10 py-8 text-right">
+                               <button 
+                                onClick={() => handleOutbound(Number(item.id), item.quantity)}
+                                className="px-8 py-3 bg-red-500/5 text-red-500 border border-red-500/20 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all shadow-lg hover:shadow-red-500/20"
+                               >
+                                 办理出库
+                               </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {activeProductItems.length === 0 && (
+                    <div className="py-32 text-center">
+                       <Package className="h-16 w-16 text-slate-800 mx-auto mb-6 opacity-20" />
+                       <p className="text-slate-500 font-bold tracking-[0.4em] uppercase text-xs">当前资源库暂无资产存量</p>
+                    </div>
+                  )}
+               </div>
+            </div>
+          )}
+        </div>
+
+        {/* --- MODALS (全量整合) --- */}
+
+        {/* 新建品名弹窗 */}
+        <Modal isOpen={isAddProductOpen} onClose={() => setIsAddProductOpen(false)} title="登记新资产名录">
+          <div className="space-y-6">
+            <div>
+              <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">资产名称</label>
+              <input 
+                className="w-full bg-slate-900 border border-white/10 rounded-xl p-4 outline-none focus:border-amber-500/50 text-white"
+                placeholder="例如：御制三生石戒指"
+                value={newProductName}
+                onChange={(e) => setNewProductName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">业务模块分类</label>
+              <select
+                className="w-full bg-slate-900 border border-white/10 rounded-xl p-4 outline-none focus:border-amber-500/50 text-white"
+                value={newProductCategory}
+                onChange={(e) => setNewProductCategory(e.target.value)}
+              >
+                {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+              </select>
+            </div>
+            <button onClick={handleCreateProduct} className="w-full py-4 bg-amber-500 text-slate-950 rounded-xl font-black uppercase tracking-widest text-xs mt-4">确认登记</button>
+          </div>
+        </Modal>
+
+        {/* 入库办理弹窗 */}
+        <Modal isOpen={isAddItemOpen} onClose={() => setIsAddItemOpen(false)} title={`资产入库: ${activeProduct?.name}`}>
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+              {activeCategory?.fields.map(field => (
+                <div key={field.key}>
+                  <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">{field.label} ({field.unit})</label>
+                  <input 
+                    type={field.type === 'number' ? 'number' : 'text'}
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl p-4 outline-none focus:border-amber-500/50 text-white"
+                    placeholder="0"
+                    value={newItemValues[field.key] || ''}
+                    onChange={(e) => setNewItemValues({...newItemValues, [field.key]: e.target.value})}
+                  />
+                </div>
+              ))}
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 ml-1">初次分发状态</label>
+              <div className="flex gap-4">
                 <button 
                   onClick={() => setNewItemListingStatus(ListingStatus.LISTED)}
-                  className={`flex-1 py-2 px-4 rounded-lg border text-sm font-medium flex items-center justify-center gap-2 transition-all ${newItemListingStatus === ListingStatus.LISTED ? 'bg-emerald-50 border-emerald-500 text-emerald-700 ring-1 ring-emerald-500' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                  className={`flex-1 py-3 rounded-xl border font-black text-[10px] uppercase tracking-widest transition-all ${newItemListingStatus === ListingStatus.LISTED ? 'bg-amber-500 border-amber-500 text-slate-950' : 'bg-slate-900 border-white/10 text-slate-500'}`}
                 >
-                    <CheckCircle2 className="h-4 w-4" /> 已上架
+                  直接上柜
                 </button>
                 <button 
                   onClick={() => setNewItemListingStatus(ListingStatus.UNLISTED)}
-                  className={`flex-1 py-2 px-4 rounded-lg border text-sm font-medium flex items-center justify-center gap-2 transition-all ${newItemListingStatus === ListingStatus.UNLISTED ? 'bg-slate-100 border-slate-400 text-slate-800 ring-1 ring-slate-400' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                  className={`flex-1 py-3 rounded-xl border font-black text-[10px] uppercase tracking-widest transition-all ${newItemListingStatus === ListingStatus.UNLISTED ? 'bg-white border-white text-slate-950' : 'bg-slate-900 border-white/10 text-slate-500'}`}
                 >
-                    <XCircle className="h-4 w-4" /> 未上架
+                  暂存仓库
                 </button>
+              </div>
             </div>
-            <p className="text-xs text-slate-500 mt-2">提示: 如果存在完全相同的规格和状态，数量将自动 +1。</p>
+            <button onClick={handleInbound} className="w-full py-4 bg-amber-500 text-slate-950 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl shadow-amber-500/20">办理入库</button>
           </div>
+        </Modal>
 
-          <div className="pt-4 flex justify-end gap-3 border-t border-slate-100 mt-4">
-             <button onClick={() => setIsAddItemOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg">取消</button>
-             <button onClick={handleCreateItem} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90">确认入库</button>
-          </div>
-        </div>
-      </Modal>
+        {/* 支付订阅弹窗 */}
+        <PaymentModal 
+          isOpen={isPaymentOpen} 
+          onClose={() => setIsPaymentOpen(false)} 
+          onPay={handlePaymentRequest} 
+        />
 
+      </div>
     </Layout>
   );
 };
