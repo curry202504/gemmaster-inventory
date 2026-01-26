@@ -1,0 +1,5 @@
+{
+  "name": "GemMaster 库存管理",
+  "description": "一个现代化的珠宝库存管理系统，支持动态产品分类、库存跟踪、平台上架状态管理以及每日Word文档报表导出。",
+  "requestFramePermissions": []
+}
