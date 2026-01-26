@@ -1,4 +1,7 @@
-const API_URL = 'http://localhost:3001/api';
+// 智能判断环境：开发环境用 localhost:3001，生产环境用当前域名下的 /api
+const API_URL = import.meta.env.MODE === 'development' 
+  ? 'http://localhost:3001/api' 
+  : '/api';
 
 export const api = {
   // 1. 发送验证码

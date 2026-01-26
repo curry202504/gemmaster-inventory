@@ -11,7 +11,8 @@ const envPath = path.resolve(__dirname, '../.env');
 if (fs.existsSync(envPath)) {
   require('dotenv').config({ path: envPath });
 } else {
-  console.error('[错误] 找不到 .env 文件');
+  // 生产环境可能没有 .env 文件，直接读环境变量，不报错
+  console.log('[提示] 未找到 .env 文件，将使用系统环境变量');
 }
 
 // 2. 引入模块
@@ -21,6 +22,10 @@ const { sendSms } = require('./sms');
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+
+// --- 关键修改：托管前端静态文件 ---
+// 指向上一级目录的 dist 文件夹
+app.use(express.static(path.join(__dirname, '../dist')));
 
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'default_secret';
@@ -39,7 +44,7 @@ function checkSmsRateLimit(phone) {
     return `发送太频繁，请 ${waitSeconds} 秒后再试`;
   }
 
-  // 规则2: 24小时内只能发10条 (自然日)
+  // 规则2: 24小时内只能发10条
   const startOfDay = new Date().setHours(0,0,0,0);
   const dailyCount = db.prepare('SELECT count(*) as count FROM sms_logs WHERE phone = ? AND status = ? AND timestamp > ?').get(phone, 'SUCCESS', startOfDay);
   
@@ -47,34 +52,26 @@ function checkSmsRateLimit(phone) {
     return '今日短信额度已用完，请明天再试';
   }
 
-  return null; // 通过检查
+  return null;
 }
 
-// --- 接口定义 ---
+// --- API 接口定义 ---
 
-// 1. 发送验证码接口 (含频控)
 app.post('/api/send-code', async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: '手机号不能为空' });
 
-    // Step 1: 检查频控
     const limitError = checkSmsRateLimit(phone);
-    if (limitError) {
-      console.warn(`[频控拦截] ${phone}: ${limitError}`);
-      return res.status(429).json({ error: limitError });
-    }
+    if (limitError) return res.status(429).json({ error: limitError });
 
-    // Step 2: 生成验证码
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
     
     verificationCodes.set(phone, { code, expiresAt });
 
-    // Step 3: 发送短信
     const success = await sendSms(phone, code);
     
-    // Step 4: 记录日志到数据库
     const status = success ? 'SUCCESS' : 'FAILED';
     db.prepare('INSERT INTO sms_logs (phone, status, timestamp) VALUES (?, ?, ?)').run(phone, status, Date.now());
 
@@ -89,7 +86,6 @@ app.post('/api/send-code', async (req, res) => {
   }
 });
 
-// 2. 注册接口
 app.post('/api/register', (req, res) => {
   try {
     const { phone, username, password, code } = req.body;
@@ -116,7 +112,6 @@ app.post('/api/register', (req, res) => {
   }
 });
 
-// 3. 登录接口
 app.post('/api/login', (req, res) => {
   try {
     const { phone, password } = req.body;
@@ -143,22 +138,18 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-// 4. 找回密码接口 (重置密码)
 app.post('/api/reset-password', (req, res) => {
   try {
     const { phone, password, code } = req.body;
 
-    // 校验验证码
     const record = verificationCodes.get(phone);
     if (!record) return res.status(400).json({ error: '请先获取验证码' });
     if (Date.now() > record.expiresAt) return res.status(400).json({ error: '验证码已过期' });
     if (record.code !== code) return res.status(400).json({ error: '验证码错误' });
 
-    // 检查用户是否存在
     const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
     if (!user) return res.status(400).json({ error: '该手机号未注册' });
 
-    // 更新密码
     const salt = bcrypt.genSaltSync(10);
     const hash = bcrypt.hashSync(password, salt);
 
@@ -173,9 +164,14 @@ app.post('/api/reset-password', (req, res) => {
   }
 });
 
+// --- 关键修改：所有其他请求都返回 index.html (前端路由支持) ---
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
+});
+
 app.listen(PORT, () => {
   console.log(`-------------------------------------------`);
-  console.log(`✅ 后端服务启动成功 (含频控保护)`);
+  console.log(`✅ 后端服务启动成功`);
   console.log(`🌍 监听地址: http://localhost:${PORT}`);
   console.log(`-------------------------------------------`);
 });
