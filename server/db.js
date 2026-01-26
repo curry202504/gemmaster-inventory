@@ -5,7 +5,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const dbPath = path.resolve(__dirname, process.env.DB_PATH || 'database.sqlite');
 const db = new Database(dbPath);
 
-// 初始化表结构
+// 初始化数据库表
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,15 +15,15 @@ db.exec(`
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 
-  -- 新增：短信发送日志表 (用于频控)
+  -- 短信日志表：用于频控逻辑
   CREATE TABLE IF NOT EXISTS sms_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     phone TEXT NOT NULL,
-    status TEXT NOT NULL, -- 'SUCCESS' or 'FAILED'
-    timestamp INTEGER NOT NULL -- 存毫秒时间戳
+    status TEXT NOT NULL, -- 'SUCCESS' 或 'FAILED'
+    timestamp INTEGER NOT NULL
   );
 `);
 
-console.log('[数据库] 表结构同步完成 (含短信日志表)');
+console.log('[数据库] 初始化成功，用户表与日志表已就绪');
 
 module.exports = { db };

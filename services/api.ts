@@ -1,4 +1,6 @@
-// 智能判断环境：开发环境用 localhost:3001，生产环境用当前域名下的 /api
+// services/api.ts
+
+// 智能判断环境：开发环境用本地 3001，生产环境用相对路径
 const API_URL = import.meta.env.MODE === 'development' 
   ? 'http://localhost:3001/api' 
   : '/api';
@@ -69,7 +71,7 @@ export const api = {
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '重置失败');
+      if (!res.ok) throw new Error(data.error || '修改失败');
       return true;
     } catch (e: any) {
       alert(e.message);
