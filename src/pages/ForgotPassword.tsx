@@ -24,9 +24,12 @@ export const ForgotPassword = () => {
     if (phone.length !== 11) return alert('请输入正确的11位手机号');
     
     try {
-      await api.sendSmsCode(phone);
+      // 【核心修改】获取后端返回的真实消息
+      const res: any = await api.sendSmsCode(phone);
       setCountdown(60);
-      alert('验证码已发送 (请查看后端控制台)');
+      
+      // 【核心修改】显示后端消息
+      alert(res.message || '验证码发送成功');
     } catch (error: any) {
       alert(error.message || '发送失败');
     }

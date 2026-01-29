@@ -25,9 +25,12 @@ export const Register = () => {
     if (phone.length !== 11) return alert('请输入正确的11位手机号');
     
     try {
-      await api.sendSmsCode(phone);
+      // 【核心修改】获取后端返回的真实消息对象
+      const res: any = await api.sendSmsCode(phone);
       setCountdown(60);
-      alert('验证码已发送 (请查看后端控制台)');
+      
+      // 【核心修改】显示后端消息 (res.message)，不再显示写死的文字
+      alert(res.message || '验证码发送成功');
     } catch (error: any) {
       alert(error.message || '发送失败');
     }
@@ -64,13 +67,13 @@ export const Register = () => {
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-2">
             <label className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest ml-1">手机号</label>
-            <div className="relative">
-              <Smartphone className="absolute left-4 top-4 h-5 w-5 text-slate-600" />
+            <div className="relative group">
+              <Smartphone className="absolute left-4 top-4 h-5 w-5 text-slate-600 group-focus-within:text-amber-400 transition-colors" />
               <input
                 type="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl focus:border-amber-500/50 outline-none text-slate-200"
+                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl focus:border-amber-500/50 outline-none text-slate-200 transition-all placeholder:text-slate-700"
                 placeholder="132..."
               />
             </div>
@@ -83,7 +86,7 @@ export const Register = () => {
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                className="w-full px-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl outline-none text-slate-200 text-center tracking-[0.5em] font-mono text-lg"
+                className="w-full px-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl focus:border-amber-500/50 outline-none text-slate-200 text-center tracking-[0.5em] font-mono text-lg"
                 placeholder="000000"
                 maxLength={6}
               />
@@ -91,7 +94,7 @@ export const Register = () => {
                 type="button"
                 onClick={handleSendCode}
                 disabled={countdown > 0}
-                className="px-6 rounded-2xl bg-white/[0.05] border border-white/10 text-slate-400 font-bold text-xs whitespace-nowrap hover:bg-white/[0.1] hover:text-amber-400 w-24 flex items-center justify-center"
+                className="px-6 rounded-2xl bg-white/[0.05] border border-white/10 text-slate-400 font-bold text-xs whitespace-nowrap hover:bg-white/[0.1] hover:text-amber-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed w-24 flex items-center justify-center"
               >
                 {countdown > 0 ? `${countdown}s` : '获取'}
               </button>
@@ -100,13 +103,13 @@ export const Register = () => {
 
           <div className="space-y-2">
             <label className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest ml-1">账户昵称</label>
-            <div className="relative">
-              <Hash className="absolute left-4 top-4 h-5 w-5 text-slate-600" />
+            <div className="relative group">
+              <Hash className="absolute left-4 top-4 h-5 w-5 text-slate-600 group-focus-within:text-amber-400 transition-colors" />
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl outline-none text-slate-200"
+                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl focus:border-amber-500/50 outline-none text-slate-200 transition-all placeholder:text-slate-700"
                 placeholder="您的称呼"
               />
             </div>
@@ -114,13 +117,13 @@ export const Register = () => {
 
           <div className="space-y-2">
             <label className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest ml-1">设置密码</label>
-            <div className="relative">
-              <Lock className="absolute left-4 top-4 h-5 w-5 text-slate-600" />
+            <div className="relative group">
+              <Lock className="absolute left-4 top-4 h-5 w-5 text-slate-600 group-focus-within:text-amber-400 transition-colors" />
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl outline-none text-slate-200"
+                className="w-full pl-12 pr-4 py-4 bg-white/[0.03] border border-white/10 rounded-2xl focus:border-amber-500/50 outline-none text-slate-200 transition-all placeholder:text-slate-700"
                 placeholder="••••••"
               />
             </div>
