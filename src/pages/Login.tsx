@@ -13,18 +13,23 @@ export const Login = () => {
     e.preventDefault();
     if (!phone || !password) return alert('请输入完整信息');
     
-    setLoading(true);
-    const user = await api.login({ phone, password });
-    setLoading(false);
-    
-    if (user) {
-      navigate('/dashboard');
+    try {
+      setLoading(true);
+      const user = await api.login({ phone, password });
+      
+      if (user) {
+        navigate('/dashboard');
+      }
+    } catch (error: any) {
+      console.error('登录异常:', error);
+      alert(error.message || '登录请求失败，请检查网络');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-[#020617] flex items-center justify-center p-4 selection:bg-amber-500/30 font-sans">
-      {/* 动态背景光晕 */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-amber-600/10 blur-[120px] rounded-full"></div>
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-blue-900/10 blur-[120px] rounded-full"></div>
@@ -69,7 +74,8 @@ export const Login = () => {
           <div className="space-y-2">
             <div className="flex justify-between items-center ml-1">
                 <label className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest">安全令牌</label>
-                <Link to="/forgot-password" self-end className="text-[10px] text-slate-500 hover:text-amber-400 transition-colors font-bold uppercase tracking-widest">
+                {/* 修复点：移除了错误的 self-end 属性，改为 className */}
+                <Link to="/forgot-password" className="text-[10px] text-slate-500 hover:text-amber-400 transition-colors font-bold uppercase tracking-widest self-end">
                     忘记密码?
                 </Link>
             </div>
