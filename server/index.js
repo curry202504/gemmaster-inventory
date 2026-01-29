@@ -13,7 +13,7 @@ if (fs.existsSync(envPath)) {
 }
 
 // 2. 引入数据库与业务模块
-const { db, initUserCategories } = require('./db'); // 引入初始化函数
+const { db, initUserCategories } = require('./db');
 const { sendSms } = require('./sms');
 const PaymentService = require('./payment');
 
@@ -53,6 +53,7 @@ const authenticate = (req, res, next) => {
 // 1. 用户账户与安全模块
 // ==========================================
 
+// 发送验证码 (已修复提示语，强制真实发送)
 app.post('/api/send-code', async (req, res) => {
   try {
     const { phone } = req.body;
@@ -60,19 +61,22 @@ app.post('/api/send-code', async (req, res) => {
     
     const lastLog = db.prepare("SELECT timestamp FROM sms_logs WHERE phone = ? AND status = 'SUCCESS' ORDER BY timestamp DESC LIMIT 1").get(phone);
     if (lastLog && (Date.now() - lastLog.timestamp < 60000)) {
-      if (isProduction) return res.status(429).json({ error: '发送太频繁' });
+      return res.status(429).json({ error: '发送太频繁，请1分钟后再试' });
     }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     verificationCodes.set(phone, { code, expiresAt: Date.now() + 300000 });
     
+    // 调用发送逻辑
     const success = await sendSms(phone, code);
+    
     db.prepare('INSERT INTO sms_logs (phone, status, timestamp) VALUES (?, ?, ?)').run(phone, success ? 'SUCCESS' : 'FAILED', Date.now());
     
     if (success) {
-      res.json({ success: true, message: isProduction ? '短信已发送' : '模拟模式：请查看后端控制台' });
+      // 统一返回友好提示，不再显示“看控制台”这种开发信息
+      res.json({ success: true, message: '验证码已通过短信发送' });
     } else {
-      res.status(500).json({ error: '短信发送失败' });
+      res.status(500).json({ error: '短信发送失败，请检查手机号或联系客服' });
     }
   } catch (err) { 
     console.error('短信接口报错:', err);
@@ -80,7 +84,7 @@ app.post('/api/send-code', async (req, res) => {
   }
 });
 
-// 注册 (核心修改：SaaS 初始化)
+// 注册 (SaaS初始化)
 app.post('/api/register', (req, res) => {
   const { phone, username, password, code } = req.body;
   const record = verificationCodes.get(phone);
@@ -93,11 +97,10 @@ app.post('/api/register', (req, res) => {
   const threeDaysLater = Date.now() + (3 * 24 * 60 * 60 * 1000);
 
   try {
-    // 1. 创建用户
     const info = db.prepare('INSERT INTO users (phone, username, password_hash, vip_expiry) VALUES (?, ?, ?, ?)').run(phone, username, hash, threeDaysLater);
     const newUserId = info.lastInsertRowid;
 
-    // 2. 【核心】为该用户初始化专属分类
+    // 为该用户初始化专属分类
     initUserCategories(newUserId);
 
     verificationCodes.delete(phone);
@@ -109,6 +112,7 @@ app.post('/api/register', (req, res) => {
   }
 });
 
+// 登录
 app.post('/api/login', (req, res) => {
   try {
     const { phone, password } = req.body;
@@ -152,16 +156,16 @@ app.post('/api/reset-password', (req, res) => {
 });
 
 // ==========================================
-// 2. 核心库存管理模块 (SaaS 隔离版)
+// 2. 核心库存管理模块 (SaaS 隔离)
 // ==========================================
 
-// 获取分类 (只看自己的)
+// 获取分类
 app.get('/api/categories', authenticate, (req, res) => {
   const categories = db.prepare('SELECT * FROM categories WHERE user_id = ?').all(req.user.id);
   res.json(categories.map(c => ({ ...c, fields: JSON.parse(c.fields) })));
 });
 
-// 获取产品 (只看自己的)
+// 获取产品
 app.get('/api/products', authenticate, (req, res) => {
   const products = db.prepare('SELECT * FROM products WHERE user_id = ?').all(req.user.id);
   res.json(products.map(p => ({
@@ -172,7 +176,7 @@ app.get('/api/products', authenticate, (req, res) => {
   })));
 });
 
-// 获取库存 (只看自己的)
+// 获取库存
 app.get('/api/items', authenticate, (req, res) => {
   const items = db.prepare('SELECT * FROM stock_items WHERE user_id = ?').all(req.user.id);
   res.json(items.map(i => ({
@@ -185,12 +189,11 @@ app.get('/api/items', authenticate, (req, res) => {
   })));
 });
 
-// 创建产品 (写入 user_id)
+// 创建产品 (重名检测)
 app.post('/api/products', authenticate, (req, res) => {
   const { name, categoryId } = req.body;
   const userId = req.user.id;
   
-  // 重名检测 (只在当前用户范围内检测)
   const existing = db.prepare('SELECT id FROM products WHERE name = ? AND category_id = ? AND user_id = ?')
     .get(name, categoryId, userId);
     
@@ -202,12 +205,11 @@ app.post('/api/products', authenticate, (req, res) => {
   res.json({ id: info.lastInsertRowid, name, categoryId });
 });
 
-// 删除产品 (级联删除，且只能删自己的)
+// 删除产品
 app.delete('/api/products/:id', authenticate, (req, res) => {
   const productId = req.params.id;
   const userId = req.user.id;
   try {
-    // 确保是该用户及其产品
     const product = db.prepare('SELECT id FROM products WHERE id = ? AND user_id = ?').get(productId, userId);
     if (!product) return res.status(404).json({ error: '产品不存在或无权操作' });
 
@@ -219,14 +221,13 @@ app.delete('/api/products/:id', authenticate, (req, res) => {
   }
 });
 
-// 入库 (写入 user_id)
+// 入库
 app.post('/api/items', authenticate, (req, res) => {
   const { productId, customValues, listingStatus } = req.body;
   const valStr = JSON.stringify(customValues);
   const userId = req.user.id;
   
   let itemId = 0;
-  // 查找时带上 user_id
   const existing = db.prepare('SELECT * FROM stock_items WHERE product_id = ? AND custom_values = ? AND listing_status = ? AND user_id = ?')
     .get(productId, valStr, listingStatus, userId);
 
@@ -239,7 +240,7 @@ app.post('/api/items', authenticate, (req, res) => {
     itemId = info.lastInsertRowid;
   }
 
-  // 记录流水 (带 user_id)
+  // 记录流水
   const weight = Number(customValues.weight) || 0;
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(userId, productId, itemId, 'IN', 1, weight, Date.now());
@@ -247,7 +248,7 @@ app.post('/api/items', authenticate, (req, res) => {
   res.json({ success: true, action: 'increment' });
 });
 
-// 出库 (写入流水)
+// 出库
 app.post('/api/items/outbound', authenticate, (req, res) => {
   const { itemId } = req.body;
   const userId = req.user.id;
@@ -270,7 +271,7 @@ app.post('/api/items/outbound', authenticate, (req, res) => {
   res.json({ success: true });
 });
 
-// 获取今日流水 (SaaS 隔离)
+// 获取今日流水
 app.get('/api/reports/daily', authenticate, (req, res) => {
   const startOfDay = new Date().setHours(0,0,0,0);
   const userId = req.user.id;
@@ -334,5 +335,8 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ AurumFlow (SaaS模式) 后端启动 | 端口: ${PORT}`);
-  console.log(`📦 [系统] 数据库连接正常，数据隔离策略已启用`);
+  console.log(`🔧 [系统] 模式: ${isProduction ? '🔴 生产 (Production)' : '🟢 开发 (Development)'}`);
+  console.log(`🔐 [系统] 密码重置模块: 已加载`);
+  console.log(`📦 [系统] 数据库连接: 正常`);
+  console.log(`📊 [系统] 报表流水模块: 已加载`);
 });
