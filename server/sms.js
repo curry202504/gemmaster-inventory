@@ -8,14 +8,10 @@ if (fs.existsSync(envPath)) {
   require('dotenv').config({ path: envPath });
 }
 
-// 判断当前是否为生产环境
-// 逻辑：如果 NODE_ENV 是 'production' 或者系统环境变量里设置了 production，则是生产环境
-const isProduction = process.env.NODE_ENV === 'production';
-
+// 【核心修改】不再判断环境，直接初始化 SDK
 let client = null;
 
-// 仅在生产环境下初始化阿里云 SDK，避免本地报错
-if (isProduction) {
+try {
   if (process.env.ALIYUN_ACCESS_KEY_ID && process.env.ALIYUN_ACCESS_KEY_SECRET) {
     client = new Core({
       accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID,
@@ -23,30 +19,19 @@ if (isProduction) {
       endpoint: 'https://dysmsapi.aliyuncs.com',
       apiVersion: '2017-05-25'
     });
+    console.log('📡 [短信服务] 阿里云 SDK 已强制加载');
   } else {
-    console.warn('⚠️ [系统警告] 生产环境模式下未检测到阿里云 Key，短信功能将无法使用！');
+    console.error('❌ [短信服务] 缺少阿里云 Key，请检查 .env 文件');
   }
+} catch (e) {
+  console.error('❌ [短信服务] SDK 初始化失败:', e);
 }
 
 async function sendSms(phoneNumber, code) {
-  // ============================
-  // 模式 A: 开发环境 (Mock Mode)
-  // ============================
-  if (!isProduction) {
-    console.log('===========================================================');
-    console.log(`📱 [开发模式-模拟短信] 目标手机: ${phoneNumber}`);
-    console.log(`🔑 [开发模式-验证码]   ${code}`);
-    console.log('   (已拦截真实发送请求，前端将收到成功响应)');
-    console.log('===========================================================');
-    return true; // 强制返回成功
-  }
-
-  // ============================
-  // 模式 B: 生产环境 (Real Mode)
-  // ============================
+  // 【核心修改】删除了所有的模拟拦截逻辑，直接发！
   
   if (!client) {
-    console.error('[阿里云] SDK 未初始化，无法发送短信。');
+    console.error('❌ [短信服务] SDK 未就绪，无法发送');
     return false;
   }
 
@@ -64,18 +49,18 @@ async function sendSms(phoneNumber, code) {
   };
 
   try {
-    console.log(`[阿里云] 正在尝试发送真实短信... 目标: ${phoneNumber}`);
+    console.log(`📡 [阿里云] 正在请求真实发送接口 -> 目标: ${phoneNumber}`);
     const response = await client.request('SendSms', params, requestOption);
     
     if (response.Code === 'OK') {
-      console.log(`[阿里云] 发送成功! BizId: ${response.BizId}`);
+      console.log(`✅ [阿里云] 发送成功! BizId: ${response.BizId}`);
       return true;
     } else {
-      console.error(`[阿里云] 发送失败: ${response.Code} - ${response.Message}`);
+      console.error(`❌ [阿里云] 发送被拒绝: ${response.Code} - ${response.Message}`);
       return false;
     }
   } catch (error) {
-    console.error('[阿里云] SDK 异常:', error);
+    console.error('❌ [阿里云] 网络或接口异常:', error);
     return false;
   }
 }
