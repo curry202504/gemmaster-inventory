@@ -54,11 +54,13 @@ const authenticate = (req, res, next) => {
 // ==========================================
 
 // 发送验证码 (已修复提示语，强制真实发送)
+// 发送验证码 (无条件真实发送版)
 app.post('/api/send-code', async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: '手机号必填' });
     
+    // 频控：1分钟1条
     const lastLog = db.prepare("SELECT timestamp FROM sms_logs WHERE phone = ? AND status = 'SUCCESS' ORDER BY timestamp DESC LIMIT 1").get(phone);
     if (lastLog && (Date.now() - lastLog.timestamp < 60000)) {
       return res.status(429).json({ error: '发送太频繁，请1分钟后再试' });
@@ -67,20 +69,19 @@ app.post('/api/send-code', async (req, res) => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     verificationCodes.set(phone, { code, expiresAt: Date.now() + 300000 });
     
-    // 调用发送逻辑
+    // 【强制真实发送】不管环境如何，直接调阿里云
     const success = await sendSms(phone, code);
     
     db.prepare('INSERT INTO sms_logs (phone, status, timestamp) VALUES (?, ?, ?)').run(phone, success ? 'SUCCESS' : 'FAILED', Date.now());
     
     if (success) {
-      // 统一返回友好提示，不再显示“看控制台”这种开发信息
-      res.json({ success: true, message: '验证码已通过短信发送' });
+      res.json({ success: true, message: '短信已发送，请查收' });
     } else {
-      res.status(500).json({ error: '短信发送失败，请检查手机号或联系客服' });
+      res.status(500).json({ error: '短信发送失败，请检查手机号或联系管理员' });
     }
   } catch (err) { 
-    console.error('短信接口报错:', err);
-    res.status(500).json({ error: '验证码服务异常' }); 
+    console.error(err);
+    res.status(500).json({ error: '短信服务异常' }); 
   }
 });
 
