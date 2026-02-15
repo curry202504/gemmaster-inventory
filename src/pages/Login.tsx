@@ -15,11 +15,29 @@ export const Login = () => {
     
     try {
       setLoading(true);
-      const user = await api.login({ phone, password });
       
-      if (user) {
-        navigate('/dashboard');
+      // 1. 发送登录请求
+      // 注意：根据你的截图，后端返回的是 { success: true, token: "...", user: {...} }
+      const res: any = await api.login({ phone, password });
+      
+      // 2. 检查登录结果
+      if (res.success) {
+        // =========== 关键修复：保存登录凭证 ===========
+        // 必须保存 token，后续请求才会被服务器认可
+        localStorage.setItem('token', res.token);
+        
+        // 必须保存用户信息，否则 Dashboard 页面会以为你没登录把你踢回来
+        localStorage.setItem('gem_user', JSON.stringify(res.user));
+        // ===========================================
+
+        // 3. 跳转到主页
+        // 这里使用 replace: true 防止用户点后退键又回到登录页
+        navigate('/dashboard', { replace: true });
+      } else {
+        // 如果后端返回 success: false
+        alert(res.message || '登录失败，账号或密码错误');
       }
+
     } catch (error: any) {
       console.error('登录异常:', error);
       alert(error.message || '登录请求失败，请检查网络');
@@ -74,7 +92,6 @@ export const Login = () => {
           <div className="space-y-2">
             <div className="flex justify-between items-center ml-1">
                 <label className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest">安全令牌</label>
-                {/* 修复点：移除了错误的 self-end 属性，改为 className */}
                 <Link to="/forgot-password" className="text-[10px] text-slate-500 hover:text-amber-400 transition-colors font-bold uppercase tracking-widest self-end">
                     忘记密码?
                 </Link>
