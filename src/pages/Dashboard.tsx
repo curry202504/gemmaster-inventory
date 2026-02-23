@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { Modal } from '../components/Modal';
-import { generateDailyReport, generateRestockReport, generateDailyFlowReport, RestockConfig } from '../services/exportService';
+import { generateRestockReport, generateDailyFlowReport, RestockConfig } from '../services/exportService';
 import { Category, Product, StockItem, ListingStatus } from '../types';
 import { 
   Plus, Search, Package, Download, ArrowRight, ArrowDownLeft, 
@@ -78,9 +78,9 @@ export const Dashboard = () => {
     );
   };
 
-  const [confirmDialog, setConfirmDialog] = useState<{isOpen: boolean, msg: string, onConfirm: () => void}>({isOpen: false, msg: '', onConfirm: () => {}});
-  const askConfirm = (msg: string, onConfirm: () => void) => {
-      setConfirmDialog({ isOpen: true, msg, onConfirm });
+  const [confirmDialog, setConfirmDialog] = useState<{isOpen: boolean, msg: string, onConfirm: () => void, onCancel?: () => void}>({isOpen: false, msg: '', onConfirm: () => {}});
+  const askConfirm = (msg: string, onConfirm: () => void, onCancel?: () => void) => {
+      setConfirmDialog({ isOpen: true, msg, onConfirm, onCancel });
   };
 
   useEffect(() => {
@@ -209,7 +209,6 @@ export const Dashboard = () => {
       setSelectedProductIds(filteredProducts.map(p => String(p.id)));
     }
   };
-  
   const handleBulkDelete = async () => {
     if (selectedProductIds.length === 0) return;
     askConfirm(`高危操作警告：\n确认永久删除选中的 ${selectedProductIds.length} 款产品及库存吗？\n该操作不可逆！`, async () => {
@@ -373,19 +372,12 @@ export const Dashboard = () => {
     } catch (error) { showToast('生成补货单失败', 'error'); } finally { setExporting(false); }
   };
 
-  // 【核心功能修复】：添加员工逻辑
   const handleAddEmployee = async () => {
-    // 【修改】：不依赖后端复杂的标记，直接用本地时间戳计算剩余时间
-    // 假设 35 天的毫秒数 = 35 * 24 * 60 * 60 * 1000 = 3024000000
-    // 如果系统里根本没有记到期时间，或者过期时间不够，就阻止
     const timeLeft = user?.vip_expiry ? (user.vip_expiry - Date.now()) : 0;
-    
-    // 我们约定：只要时间大于一个月的（比如买了年费），才允许添加员工
     if (timeLeft < 3024000000) {
         setIsPaymentOpen(true);
         return showToast('员工管理属于【PRO年度会员】专属特权，请先升级！', 'error');
     }
-    
     try {
       const res = await fetch('/api/employees', {
         method: 'POST',
@@ -511,7 +503,6 @@ export const Dashboard = () => {
      return <Layout><div className="flex h-[50vh] items-center justify-center text-slate-400 font-bold tracking-widest text-sm animate-pulse">正在进入系统核心...</div></Layout>;
   }
 
-  // ===================== 移动端“我的”视图 =====================
   if (isProfileTab) {
     return (
       <Layout>
@@ -530,17 +521,7 @@ export const Dashboard = () => {
 
             <div className="space-y-3">
               {isOwnerOrLegacy && (
-                <button onClick={() => { 
-                   // 校验是否拥有特权
-                   const timeLeft = user?.vip_expiry ? (user.vip_expiry - Date.now()) : 0;
-                   if (timeLeft < 3024000000) {
-                      setIsPaymentOpen(true);
-                      showToast('员工管理属于【PRO年度会员】专属特权，请先升级！', 'error');
-                      return;
-                   }
-                   loadEmployees(); 
-                   setIsEmployeeModalOpen(true); 
-                }} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
+                <button onClick={() => { loadEmployees(); setIsEmployeeModalOpen(true); }} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
                   <div className="flex items-center gap-3">
                     <div className="p-2 bg-blue-50 rounded-xl"><Users className="w-5 h-5 text-blue-500" /></div>
                     <span className="font-bold text-slate-700 text-sm">员工终端管理</span>
@@ -548,7 +529,6 @@ export const Dashboard = () => {
                   <ChevronRight className="w-5 h-5 text-slate-300" />
                 </button>
               )}
-
               {isOwnerOrLegacy && (
                 <button onClick={() => setIsPaymentOpen(true)} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
                   <div className="flex items-center gap-3">
@@ -558,7 +538,6 @@ export const Dashboard = () => {
                   <ChevronRight className="w-5 h-5 text-slate-300" />
                 </button>
               )}
-
               <button onClick={handleLogout} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all mt-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-red-50 rounded-xl"><LogOut className="w-5 h-5 text-red-500" /></div>
@@ -567,54 +546,10 @@ export const Dashboard = () => {
               </button>
             </div>
          </div>
-
-         {/* 此处提取到底部共享 Modal 区，这里不再重复渲染 */}
-         <Modal isOpen={isEmployeeModalOpen} onClose={() => setIsEmployeeModalOpen(false)} title="员工终端管理">
-            <div className="space-y-5 text-slate-800">
-              <div className="bg-amber-50 text-amber-800 p-3 rounded-xl border border-amber-200 text-[11px] font-bold">
-                注意：子账号功能需【PRO 年度会员】方可创建与使用。
-              </div>
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
-                <h4 className="text-[11px] font-bold text-slate-500">新增子账号</h4>
-                <div className="grid grid-cols-1 gap-2">
-                  <input placeholder="手机号" value={empForm.phone} onChange={e=>setEmpForm({...empForm, phone: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:border-amber-400 outline-none" />
-                  <input placeholder="员工姓名" value={empForm.username} onChange={e=>setEmpForm({...empForm, username: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:border-amber-400 outline-none" />
-                  <input placeholder="设置密码" type="password" value={empForm.password} onChange={e=>setEmpForm({...empForm, password: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:border-amber-400 outline-none" />
-                </div>
-                <button onClick={handleAddEmployee} className="w-full py-2 bg-slate-800 text-white rounded-lg text-[11px] font-bold hover:bg-slate-700 flex justify-center items-center gap-1.5 mt-2"><UserPlus className="w-3.5 h-3.5"/> 授权创建 (需年费VIP)</button>
-              </div>
-              <div>
-                <h4 className="text-[11px] font-bold text-slate-500 mb-2">已授权终端 ({employees.length})</h4>
-                {employees.length === 0 ? (
-                  <p className="text-[11px] text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded-xl bg-white">暂无</p>
-                ) : (
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {employees.map(emp => (
-                      <div key={emp.id} className="flex justify-between items-center p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm">
-                        <div>
-                          <p className="font-bold text-slate-800 text-xs">{emp.username}</p>
-                          <p className="text-[9px] text-slate-400 mt-0.5">{emp.phone}</p>
-                        </div>
-                        <button onClick={() => {
-                          askConfirm(`确认永久吊销 "${emp.username}" 吗？`, async () => {
-                            await fetch(`/api/employees/${emp.id}`, {method:'DELETE', headers:{'Authorization': `Bearer ${localStorage.getItem('gem_token')}`}});
-                            showToast('权限已吊销', 'success');
-                            loadEmployees();
-                          })
-                        }} className="text-red-500 hover:bg-red-50 px-2 py-1 rounded transition-colors text-[10px] font-bold">吊销</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </Modal>
-          <PaymentModal isOpen={isPaymentOpen} onClose={() => setIsPaymentOpen(false)} />
       </Layout>
     );
   }
 
-  // ===================== 大屏或工作台视图 =====================
   return (
     <Layout>
       {renderToast()}
@@ -628,7 +563,7 @@ export const Dashboard = () => {
               <button onClick={() => {
                   if (confirmDialog.onCancel) confirmDialog.onCancel();
                   setConfirmDialog({...confirmDialog, isOpen: false});
-              }} className="px-5 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-200 transition-colors">取消</button>
+              }} className="px-5 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-200 transition-colors">取消操作</button>
               <button onClick={() => { 
                   confirmDialog.onConfirm(); 
                   setConfirmDialog({...confirmDialog, isOpen: false}); 
@@ -638,7 +573,6 @@ export const Dashboard = () => {
       </Modal>
 
       <div className="w-full max-w-full overflow-x-hidden">
-        {/* 大屏顶栏：在手机端隐藏此栏，因为功能已移至“我的”Tab */}
         <div className="hidden lg:grid mb-6 grid-cols-12 gap-4">
           <div className="col-span-4 bg-white border border-slate-200 shadow-sm p-5 rounded-2xl flex flex-col justify-center relative overflow-hidden">
             <div className="absolute top-0 right-0 w-[200px] h-[200px] bg-amber-50 rounded-full blur-[60px] -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
@@ -693,7 +627,6 @@ export const Dashboard = () => {
           </div>
         </div>
 
-        {/* 手机端独享的顶部统计浓缩条 */}
         <div className="lg:hidden mb-4 grid grid-cols-3 gap-2 bg-white border border-slate-200 shadow-sm p-3 rounded-xl">
            <div onClick={() => setIsStockDetailOpen(true)} className="flex flex-col items-center border-r border-slate-100 pr-2">
              <span className="text-[10px] text-slate-400 font-bold mb-0.5">总储备</span>
@@ -743,7 +676,7 @@ export const Dashboard = () => {
                 <button onClick={() => setIsImportModalOpen(true)} className="flex items-center justify-center px-3 py-2.5 bg-white border border-slate-300 hover:border-amber-400 hover:text-amber-600 text-slate-700 rounded-xl font-bold text-xs transition-all whitespace-nowrap shadow-sm">
                    <Upload className="h-4 w-4 mr-1" /> 导入
                 </button>
-                <button onClick={() => setIsAddProductOpen(true)} className="col-span-2 lg:col-span-1 flex items-center justify-center px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-xl font-bold text-xs transition-all shadow-sm whitespace-nowrap">
+                <button onClick={() => setIsAddProductOpen(true)} className="flex items-center justify-center px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-xl font-bold text-xs transition-all shadow-sm whitespace-nowrap">
                    <Plus className="h-4 w-4 mr-0.5" /> 新产品
                 </button>
               </div>
@@ -803,124 +736,25 @@ export const Dashboard = () => {
           </div>
         ) : (
           <div className="animate-in fade-in slide-in-from-right-8 duration-300">
-              <div className="flex flex-col xl:flex-row gap-4 mb-4 lg:mb-6 bg-white p-4 lg:p-5 rounded-2xl border border-slate-200 shadow-sm">
-                
-                <div className="flex items-start gap-3 xl:w-1/3">
+              <div className="flex flex-col md:flex-row md:items-center gap-3 lg:gap-4 mb-4 lg:mb-6 bg-white p-3 lg:p-4 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-3">
                     <button onClick={() => setView('DASHBOARD')} className="w-10 h-10 flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200 text-slate-500 hover:text-amber-600 hover:bg-amber-50 transition-all shrink-0">
                       <ArrowDownLeft className="h-5 w-5" />
                     </button>
                     <div className="flex-1 min-w-0">
-                      <h1 className="text-xl lg:text-2xl font-black text-slate-800 tracking-tight leading-none mb-1">{activeProduct?.name}</h1>
-                      <span className="inline-block px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold border border-amber-100">{activeCategory?.name}</span>
+                      <h1 className="text-xl lg:text-2xl font-black text-slate-800 tracking-tight leading-none truncate">{activeProduct?.name}</h1>
+                      <span className="inline-block mt-1.5 px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold border border-amber-100">{activeCategory?.name}</span>
                     </div>
                 </div>
-                
-                <div className="flex-1 flex flex-col sm:flex-row items-end gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                   {activeCategory?.fields.map(field => (
-                      <div key={field.key} className="w-full sm:w-auto flex-1">
-                         <label className="block text-[10px] font-bold text-slate-500 mb-1">{field.label}</label>
-                         <input 
-                           type={field.type === 'number' ? 'number' : 'text'} step={field.type === 'number' ? '0.01' : undefined} 
-                           className="w-full h-10 bg-white border border-slate-200 rounded-lg px-3 text-slate-800 text-sm focus:border-amber-400 outline-none"
-                           value={newItemValues[field.key] || ''}
-                           onChange={(e) => {
-                             const val = e.target.value;
-                             if (field.type === 'number') { if (/^\d*\.?\d{0,2}$/.test(val)) setNewItemValues({...newItemValues, [field.key]: val}) }
-                             else { setNewItemValues({...newItemValues, [field.key]: val}) }
-                           }}
-                         />
-                      </div>
-                   ))}
-                   
-                   <div className="w-full sm:w-auto flex-1">
-                      <label className="block text-[10px] font-bold text-slate-500 mb-1">存放位置</label>
-                      <div className="flex bg-white rounded-lg border border-slate-200 p-0.5 h-10">
-                         <button onClick={() => setNewItemListingStatus(ListingStatus.LISTED)} className={`flex-1 px-2 text-[11px] font-bold rounded-md transition-colors ${newItemListingStatus === ListingStatus.LISTED ? 'bg-amber-100 text-amber-700' : 'text-slate-500'}`}>上架</button>
-                         <button onClick={() => setNewItemListingStatus(ListingStatus.UNLISTED)} className={`flex-1 px-2 text-[11px] font-bold rounded-md transition-colors ${newItemListingStatus === ListingStatus.UNLISTED ? 'bg-slate-200 text-slate-700' : 'text-slate-500'}`}>仓库</button>
-                      </div>
-                   </div>
-                   
-                   <button onClick={handleInbound} className="w-full sm:w-auto h-10 px-6 bg-slate-900 text-white rounded-lg font-bold text-xs hover:bg-slate-800 transition-all shadow-md flex items-center justify-center whitespace-nowrap">
-                      <Plus className="w-4 h-4 mr-1" /> 确认入库
-                   </button>
-                </div>
+                <button onClick={() => setIsAddItemOpen(true)} className="w-full md:w-auto px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-1.5 whitespace-nowrap">
+                  <Plus className="h-4 w-4" /> 办理入库
+                </button>
               </div>
               
               <StockGrid title="已上架库存" data={listedItems} colorClass="text-emerald-600" icon={Store} />
               <StockGrid title="仓库储备 (未上架)" data={unlistedItems} colorClass="text-slate-500" icon={Archive} />
           </div>
         )}
-
-        {/* ===================== 全局共享弹窗 ===================== */}
-        <Modal isOpen={isFlowModalOpen} onClose={() => setIsFlowModalOpen(false)} title="出入库明细记录">
-          <div className="space-y-4">
-             <div className="flex items-center gap-2">
-               <input type="date" value={flowStartDate} onChange={(e) => {setFlowStartDate(e.target.value); fetchFlowLogs(e.target.value, flowEndDate);}} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs outline-none focus:border-blue-400" />
-               <span className="text-slate-400 text-xs font-bold">至</span>
-               <input type="date" value={flowEndDate} onChange={(e) => {setFlowEndDate(e.target.value); fetchFlowLogs(flowStartDate, e.target.value);}} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs outline-none focus:border-blue-400" />
-             </div>
-             
-             <div className="flex gap-2">
-                <div className="flex-1 bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-center">
-                  <span className="block text-[10px] text-emerald-600 font-bold mb-1 tracking-widest">区间入库</span>
-                  <span className="text-lg font-black text-emerald-700 tabular-nums">{flowLogs.filter(l=>l.type==='IN').reduce((s,l)=>s+l.quantity,0)} <span className="text-[10px]">件</span></span>
-                </div>
-                <div className="flex-1 bg-red-50 border border-red-100 rounded-xl p-3 text-center">
-                  <span className="block text-[10px] text-red-600 font-bold mb-1 tracking-widest">区间出库</span>
-                  <span className="text-lg font-black text-red-700 tabular-nums">{flowLogs.filter(l=>l.type==='OUT').reduce((s,l)=>s+l.quantity,0)} <span className="text-[10px]">件</span></span>
-                </div>
-             </div>
-
-             <div className="border border-slate-200 rounded-xl h-64 overflow-y-auto bg-slate-50">
-                {isFlowLoading ? (
-                  <div className="h-full flex items-center justify-center text-slate-400 text-xs font-bold">数据拉取中...</div>
-                ) : flowLogs.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-slate-400 text-xs font-bold">该区间无流水记录</div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {flowLogs.map((log, idx) => (
-                      <div key={idx} className="p-3 bg-white flex justify-between items-center hover:bg-slate-50 transition-colors">
-                        <div className="flex flex-col gap-1">
-                          <div className="flex items-center gap-2">
-                             <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${log.type==='IN'?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-700'}`}>
-                               {log.type==='IN' ? '入库' : '出库'}
-                             </span>
-                             <span className="font-bold text-sm text-slate-800 line-clamp-1">{log.product_name || '未知商品'}</span>
-                          </div>
-                          
-                          {log.custom_values && log.custom_values !== '{}' ? (
-                             <span className="text-[10px] text-slate-500 font-medium mt-0.5">
-                               {(() => {
-                                 try {
-                                   const cv = JSON.parse(log.custom_values);
-                                   const s = cv.size ? `圈口: ${cv.size} | ` : '';
-                                   return `${s}克重: ${cv.weight}g`;
-                                 } catch(e) { return `克重: ${log.weight}g`; }
-                               })()}
-                             </span>
-                          ) : (
-                             <span className="text-[10px] text-slate-500 font-medium mt-0.5">克重: {log.weight}g</span>
-                          )}
-                          
-                          <span className="text-[9px] text-slate-400 font-mono mt-0.5">{new Date(log.timestamp).toLocaleString()}</span>
-                        </div>
-                        <div className="text-right flex flex-col items-end justify-center">
-                          <span className={`font-black text-lg tabular-nums leading-none ${log.type==='IN'?'text-emerald-600':'text-red-600'}`}>
-                             {log.type==='IN'?'+':'-'}{log.quantity}
-                          </span>
-                          <span className="text-[10px] text-slate-400 mt-1 font-bold">件</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-             </div>
-
-             <button onClick={handleExecuteFlowExport} disabled={exporting || flowLogs.length===0} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-md disabled:opacity-50 flex justify-center items-center gap-2">
-                {exporting ? '正在生成报表...' : <><FileText className="w-4 h-4"/> 导出 Word 流水明细</>}
-             </button>
-          </div>
-        </Modal>
 
         <Modal isOpen={isEmployeeModalOpen} onClose={() => setIsEmployeeModalOpen(false)} title="员工终端管理">
           <div className="space-y-5 text-slate-800">
@@ -940,7 +774,7 @@ export const Dashboard = () => {
             <div>
               <h4 className="text-[11px] font-bold text-slate-500 mb-2">已授权终端 ({employees.length})</h4>
               {employees.length === 0 ? (
-                <p className="text-[11px] text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded-xl bg-white">暂无员工</p>
+                <p className="text-[11px] text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded-xl bg-white">暂无员工账号</p>
               ) : (
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {employees.map(emp => (
@@ -1003,18 +837,96 @@ export const Dashboard = () => {
           <div className="space-y-3">
             {categoryStats.map((cat, idx) => (
               <div key={idx} className="flex items-center justify-between p-3.5 bg-white border border-slate-200 rounded-xl shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center text-amber-600 shrink-0">
-                    <PieChart className="w-5 h-5" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center text-amber-600 shrink-0">
+                    <PieChart className="w-4 h-4" />
                   </div>
-                  <span className="font-bold text-sm text-slate-700">{cat.name}</span>
+                  <span className="font-bold text-xs text-slate-700">{cat.name}</span>
                 </div>
                 <span className="text-2xl font-black text-slate-800 tabular-nums">
                   {cat.count} <span className="text-[10px] text-slate-400 font-bold ml-0.5">件</span>
                 </span>
               </div>
             ))}
-            {categoryStats.length === 0 && <p className="text-center text-slate-400 py-8 text-sm">暂无库存</p>}
+            {categoryStats.length === 0 && <p className="text-center text-slate-400 py-6 text-xs">暂无库存</p>}
+          </div>
+        </Modal>
+
+        <Modal isOpen={isFlowModalOpen} onClose={() => setIsFlowModalOpen(false)} title="出入库流水明细">
+          <div className="space-y-4">
+             <div className="flex items-center gap-2">
+               <input type="date" value={flowStartDate} onChange={(e) => {
+                   setFlowStartDate(e.target.value); 
+                   setIsFlowLoading(true);
+                   fetch('/api/reports/flow', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('gem_token')}` }, body: JSON.stringify({ startDate: new Date(e.target.value).setHours(0,0,0,0), endDate: new Date(flowEndDate).setHours(23,59,59,999) }) }).then(res => res.json()).then(data => { setFlowLogs(Array.isArray(data) ? data : []); setIsFlowLoading(false); });
+               }} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs outline-none focus:border-blue-400" />
+               <span className="text-slate-400 text-xs font-bold">至</span>
+               <input type="date" value={flowEndDate} onChange={(e) => {
+                   setFlowEndDate(e.target.value); 
+                   setIsFlowLoading(true);
+                   fetch('/api/reports/flow', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('gem_token')}` }, body: JSON.stringify({ startDate: new Date(flowStartDate).setHours(0,0,0,0), endDate: new Date(e.target.value).setHours(23,59,59,999) }) }).then(res => res.json()).then(data => { setFlowLogs(Array.isArray(data) ? data : []); setIsFlowLoading(false); });
+               }} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs outline-none focus:border-blue-400" />
+             </div>
+             
+             <div className="flex gap-2">
+                <div className="flex-1 bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-center">
+                  <span className="block text-[10px] text-emerald-600 font-bold mb-1 tracking-widest">区间入库</span>
+                  <span className="text-lg font-black text-emerald-700 tabular-nums">{flowLogs.filter(l=>l.type==='IN').reduce((s,l)=>s+l.quantity,0)} <span className="text-[10px]">件</span></span>
+                </div>
+                <div className="flex-1 bg-red-50 border border-red-100 rounded-xl p-3 text-center">
+                  <span className="block text-[10px] text-red-600 font-bold mb-1 tracking-widest">区间出库</span>
+                  <span className="text-lg font-black text-red-700 tabular-nums">{flowLogs.filter(l=>l.type==='OUT').reduce((s,l)=>s+l.quantity,0)} <span className="text-[10px]">件</span></span>
+                </div>
+             </div>
+
+             <div className="border border-slate-200 rounded-xl h-64 overflow-y-auto bg-slate-50">
+                {isFlowLoading ? (
+                  <div className="h-full flex items-center justify-center text-slate-400 text-xs font-bold">数据拉取中...</div>
+                ) : flowLogs.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-slate-400 text-xs font-bold">该区间无流水记录</div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {flowLogs.map((log:any, idx:number) => (
+                      <div key={idx} className="p-3 bg-white flex justify-between items-center hover:bg-slate-50 transition-colors">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                             <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${log.type==='IN'?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-700'}`}>
+                               {log.type==='IN' ? '入库' : '出库'}
+                             </span>
+                             <span className="font-bold text-sm text-slate-800 line-clamp-1">{log.product_name || '未知产品'}</span>
+                          </div>
+                          
+                          {log.custom_values && log.custom_values !== '{}' ? (
+                             <span className="text-[10px] text-slate-500 font-medium mt-0.5">
+                               {(() => {
+                                 try {
+                                   const cv = JSON.parse(log.custom_values);
+                                   const s = cv.size ? `圈口: ${cv.size} | ` : '';
+                                   return `${s}克重: ${cv.weight}g`;
+                                 } catch(e) { return `克重: ${log.weight}g`; }
+                               })()}
+                             </span>
+                          ) : (
+                             <span className="text-[10px] text-slate-500 font-medium mt-0.5">克重: {log.weight}g</span>
+                          )}
+                          
+                          <span className="text-[9px] text-slate-400 font-mono mt-0.5">{new Date(log.timestamp).toLocaleString()}</span>
+                        </div>
+                        <div className="text-right flex flex-col items-end justify-center">
+                          <span className={`font-black text-lg tabular-nums leading-none ${log.type==='IN'?'text-emerald-600':'text-red-600'}`}>
+                             {log.type==='IN'?'+':'-'}{log.quantity}
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-1 font-bold">件</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+             </div>
+
+             <button onClick={handleExecuteFlowExport} disabled={exporting || flowLogs.length===0} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-md disabled:opacity-50 flex justify-center items-center gap-2">
+                {exporting ? '正在生成报表...' : <><FileText className="w-4 h-4"/> 导出 Word 流水明细</>}
+             </button>
           </div>
         </Modal>
 
@@ -1060,6 +972,36 @@ export const Dashboard = () => {
               </select>
             </div>
             <button onClick={handleCreateProduct} className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-sm mt-2 transition-colors shadow-md">确认创建</button>
+          </div>
+        </Modal>
+
+        <Modal isOpen={isAddItemOpen} onClose={() => setIsAddItemOpen(false)} title={`办理入库: ${activeProduct?.name}`}>
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-3">
+              {activeCategory?.fields.map(field => (
+                <div key={field.key}>
+                  <label className="block text-[10px] font-bold text-slate-500 mb-1.5">{field.label}</label>
+                  <input 
+                    type={field.type === 'number' ? 'number' : 'text'} step={field.type === 'number' ? '0.01' : undefined} 
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 text-sm focus:border-amber-400 outline-none"
+                    value={newItemValues[field.key] || ''}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (field.type === 'number') { if (/^\d*\.?\d{0,2}$/.test(val)) setNewItemValues({...newItemValues, [field.key]: val}) }
+                      else { setNewItemValues({...newItemValues, [field.key]: val}) }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 mb-1.5">上架状态</label>
+              <div className="flex gap-2">
+                <button onClick={() => setNewItemListingStatus(ListingStatus.LISTED)} className={`flex-1 py-2.5 rounded-xl border text-xs font-bold transition-all ${newItemListingStatus === ListingStatus.LISTED ? 'bg-amber-50 border-amber-400 text-amber-700 shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>已上架</button>
+                <button onClick={() => setNewItemListingStatus(ListingStatus.UNLISTED)} className={`flex-1 py-2.5 rounded-xl border text-xs font-bold transition-all ${newItemListingStatus === ListingStatus.UNLISTED ? 'bg-slate-800 border-slate-700 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>未上架(仓库)</button>
+              </div>
+            </div>
+            <button onClick={handleInbound} className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-sm mt-2 shadow-md">确认入库</button>
           </div>
         </Modal>
 
