@@ -70,3 +70,12 @@ dist/
 .vscode/
 *.swp
 *.DS_Store
+# ---------------------------------------------------
+# 核心安全拦截：绝对禁止数据库文件上云！
+# ---------------------------------------------------
+server/data/database.sqlite
+server/data/database.sqlite-shm
+server/data/database.sqlite-wal
+*.sqlite
+*.sqlite-*
+# ---------------------------------------------------
