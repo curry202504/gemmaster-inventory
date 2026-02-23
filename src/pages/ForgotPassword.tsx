@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ShieldCheck, Smartphone, Lock, KeyRound, ArrowLeft } from 'lucide-react';
-import { api } from '../services/api'; // 发送验证码依然用您原本的 api
+import { ToastContainer, showToast } from '../components/Toast'; // 引入优雅弹窗
 
 export const ForgotPassword = () => {
   const [phone, setPhone] = useState('');
@@ -21,25 +21,35 @@ export const ForgotPassword = () => {
   }, [countdown]);
 
   const handleSendCode = async () => {
-    if (!phone) return alert('请输入需要重置的手机号');
-    if (phone.length !== 11) return alert('请输入正确的11位手机号');
+    if (!phone) return showToast('请输入需要重置的手机号', 'error');
+    if (phone.length !== 11) return showToast('请输入正确的11位手机号', 'error');
     
     try {
-      const res: any = await api.sendSmsCode(phone);
-      setCountdown(60);
-      alert(res.message || '验证码发送成功，请查收');
+      // 使用底层 fetch 避免依赖外部封装
+      const response = await fetch('/api/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone })
+      });
+      const res = await response.json();
+
+      if (response.ok && res.success) {
+         setCountdown(60);
+         showToast('验证码发送成功，请查收', 'success');
+      } else {
+         showToast(res.error || '发送失败', 'error');
+      }
     } catch (error: any) {
-      alert(error.message || '发送失败');
+      showToast('网络请求失败', 'error');
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phone || !code || !newPassword) return alert('请填写完整信息');
+    if (!phone || !code || !newPassword) return showToast('请填写完整信息', 'error');
     
     try {
       setLoading(true);
-      // 直接调用原生的 fetch，保证 100% 连通我们刚才在 index.js 里写的接口
       const response = await fetch('/api/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -49,13 +59,13 @@ export const ForgotPassword = () => {
       const data = await response.json();
       
       if (data.success) {
-        alert('密码重置成功！请使用新密码重新登录。');
-        navigate('/login');
+        showToast('密码重置成功！请使用新密码登录', 'success');
+        setTimeout(() => navigate('/login'), 1500);
       } else {
-         alert(data.error || '重置失败');
+         showToast(data.error || '重置失败', 'error');
       }
     } catch (error: any) {
-      alert('网络请求失败，请检查服务是否运行');
+      showToast('网络请求失败，请检查服务是否运行', 'error');
     } finally {
       setLoading(false);
     }
@@ -63,7 +73,8 @@ export const ForgotPassword = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 font-sans relative overflow-hidden">
-      {/* 极简背景光晕 */}
+      <ToastContainer />
+
       <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[70%] bg-emerald-100/40 blur-[120px] rounded-full pointer-events-none"></div>
 
       <div className="bg-white p-10 rounded-[2.5rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] w-full max-w-md border border-slate-100 relative z-10 transition-all">
@@ -82,21 +93,21 @@ export const ForgotPassword = () => {
         
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">预留手机号</label>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">预留手机号</label>
             <div className="relative group">
               <Smartphone className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400 group-focus-within:text-emerald-500 transition-colors" />
               <input
                 type="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:border-emerald-400 focus:bg-white outline-none text-slate-800 transition-all placeholder:text-slate-400 font-medium"
+                className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:border-emerald-400 focus:bg-white outline-none text-slate-800 transition-all font-medium"
                 placeholder="您账号的手机号码"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">安全校验码</label>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">安全校验码</label>
             <div className="flex gap-3">
               <input
                 type="text"
@@ -118,14 +129,14 @@ export const ForgotPassword = () => {
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">设置新密码</label>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">设置新密码</label>
             <div className="relative group">
               <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400 group-focus-within:text-emerald-500 transition-colors" />
               <input
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:border-emerald-400 focus:bg-white outline-none text-slate-800 transition-all placeholder:text-slate-400 font-medium"
+                className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:border-emerald-400 focus:bg-white outline-none text-slate-800 transition-all font-medium"
                 placeholder="••••••"
               />
             </div>
