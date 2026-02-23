@@ -1,139 +1,163 @@
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx";
-import saveAs from "file-saver";
-import { Product, StockItem, Category } from "../types";
-import { api } from "./api";
+// 文件名: src/services/exportService.ts
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
+import { saveAs } from 'file-saver';
+import { Product, StockItem, Category } from '../types';
 
-// 补货配置接口
 export interface RestockConfig {
-  minSize: number; // 最小圈口 (如 10)
-  maxSize: number; // 最大圈口 (如 22)
-  targetQty: number; // 安全库存 (如 5)
+  minSize: number;
+  maxSize: number;
+  targetQty: number;
 }
 
-export const generateDailyReport = async (
+export const generateRestockReport = async (
   products: Product[],
   items: StockItem[],
   categories: Category[],
-  restockConfig: RestockConfig
+  config: RestockConfig
 ) => {
-  // 1. 获取今日流水日志
-  const logs = await api.getDailyLogs();
-  
-  // 统计今日入库/出库
-  const inboundLogs = logs.filter((l: any) => l.type === 'IN');
-  const outboundLogs = logs.filter((l: any) => l.type === 'OUT');
-  
-  const totalInQty = inboundLogs.reduce((s: number, l: any) => s + l.quantity, 0);
-  const totalInWeight = inboundLogs.reduce((s: number, l: any) => s + l.weight, 0);
-  
-  const totalOutQty = outboundLogs.reduce((s: number, l: any) => s + l.quantity, 0);
-  const totalOutWeight = outboundLogs.reduce((s: number, l: any) => s + l.weight, 0);
+  const children: any[] = [];
+  const dateStr = new Date().toLocaleDateString();
 
-  // 2. 生成缺货分析报告 (纯文字版)
-  const restockParagraphs: Paragraph[] = [];
-  let hasRestockData = false;
+  children.push(
+    new Paragraph({
+      text: `智能补货建议清单 - ${dateStr}`,
+      heading: HeadingLevel.HEADING_1,
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 400 },
+    }),
+    new Paragraph({
+      children: [
+        new TextRun({ text: `补货标准：圈口范围 ${config.minSize}# - ${config.maxSize}#，目标安全库存 ${config.targetQty} 件`, color: "5c6ac4" })
+      ],
+      spacing: { after: 400 },
+    })
+  );
 
-  // 遍历所有选中的产品
+  let hasRestock = false;
+
   products.forEach(prod => {
-    // 找到该产品的所有库存
     const prodItems = items.filter(i => String(i.productId) === String(prod.id));
-    const category = categories.find(c => c.id === prod.categoryId);
-    
-    // 只有戒指、手链等有圈口属性的才分析
-    if (category?.name.includes('戒指') || category?.name.includes('手链')) {
-      const missingDetails: string[] = [];
+    const restockDetails: string[] = [];
 
-      // 遍历圈口范围
-      for (let size = restockConfig.minSize; size <= restockConfig.maxSize; size++) {
-        // 查找当前圈口的库存 (模糊匹配字符串，比如 "12" 或 "12#")
-        const currentStockItem = prodItems.find(item => {
-          const itemSize = item.customValues?.size;
-          // 移除所有非数字字符进行比较
-          return itemSize && String(itemSize).replace(/\D/g, '') === String(size);
-        });
-
-        const currentQty = currentStockItem ? currentStockItem.quantity : 0;
-        
-        // 如果库存低于安全水位
-        if (currentQty < restockConfig.targetQty) {
-          const deficit = restockConfig.targetQty - currentQty;
-          // 生成话术：10圈口需要补3个
-          missingDetails.push(`${size}圈口补${deficit}个`);
-        }
+    for (let size = config.minSize; size <= config.maxSize; size++) {
+      const existingItems = prodItems.filter(i => {
+        const itemSize = parseFloat(String(i.customValues?.size || '0').replace(/[^0-9.]/g, ''));
+        return itemSize === size;
+      });
+      const currentQty = existingItems.reduce((s, i) => s + i.quantity, 0);
+      
+      const deficit = config.targetQty - currentQty;
+      if (deficit > 0) {
+        restockDetails.push(`${size}# 补 ${deficit}件`);
       }
+    }
 
-      // 如果该产品有补货需求，生成一行文字
-      if (missingDetails.length > 0) {
-        hasRestockData = true;
-        restockParagraphs.push(
-          new Paragraph({
-            children: [
-              // 品名：(加粗)
-              new TextRun({ 
-                text: `${prod.name}：`, 
-                bold: true,
-                size: 24 // 字号稍微大一点
-              }),
-              // 10圈口需要补3个 (红色)
-              new TextRun({ 
-                text: missingDetails.join("，"), 
-                color: "FF0000",
-                size: 24
-              })
-            ],
-            spacing: { before: 120 } // 段落间距
-          })
-        );
-      }
+    if (restockDetails.length > 0) {
+      hasRestock = true;
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: `${prod.name}: `, bold: true, size: 28 }),
+            new TextRun({ text: restockDetails.join('，'), color: "d32f2f", size: 24 })
+          ],
+          spacing: { after: 200 },
+        })
+      );
     }
   });
 
-  if (!hasRestockData) {
-    restockParagraphs.push(
-      new Paragraph({
-        children: [new TextRun({ text: "当前所有选定产品库存充足，无需补货。", color: "008000" })],
-        spacing: { before: 120 }
+  if (!hasRestock) {
+    children.push(
+      new Paragraph({ 
+        children: [
+          new TextRun({ text: "当前所有产品均达到安全库存，无需补货。", color: "2e7d32" })
+        ] 
       })
     );
   }
 
-  // 3. 构建文档
-  const doc = new Document({
-    sections: [
-      {
-        properties: {},
-        children: [
-          new Paragraph({ 
-            text: `库存运营日报 - ${new Date().toLocaleDateString()}`, 
-            heading: HeadingLevel.HEADING_1, 
-            alignment: AlignmentType.CENTER 
-          }),
-          new Paragraph({ text: "" }), // 空行
-
-          // 今日汇总
-          new Paragraph({ text: "一、今日流水汇总", heading: HeadingLevel.HEADING_2 }),
-          new Paragraph({ 
-            children: [new TextRun({ text: `• 今日入库：${totalInQty} 件，总重 ${totalInWeight.toFixed(2)}g`, size: 24 })],
-            spacing: { before: 100 }
-          }),
-          new Paragraph({ 
-            children: [new TextRun({ text: `• 今日出库：${totalOutQty} 件，总重 ${totalOutWeight.toFixed(2)}g`, size: 24 })],
-            spacing: { after: 200 }
-          }),
-
-          // 补货建议 (标题)
-          new Paragraph({ 
-            text: `二、智能补货建议 (分析范围: ${restockConfig.minSize}# - ${restockConfig.maxSize}#，安全库存: ${restockConfig.targetQty})`, 
-            heading: HeadingLevel.HEADING_2 
-          }),
-          
-          // 补货建议 (内容 - 直接展开 paragraph 数组)
-          ...restockParagraphs
-        ],
-      },
-    ],
-  });
-
+  const doc = new Document({ sections: [{ children }] });
   const blob = await Packer.toBlob(doc);
-  saveAs(blob, `库存日报_${new Date().toISOString().split('T')[0]}.docx`);
+  saveAs(blob, `采购补货单_${dateStr.replace(/\//g, '')}.docx`);
+};
+
+export const generateDailyFlowReport = async (logs: any[], reportTitle: string = "出入库流水明细表") => {
+  try {
+    const dateStr = new Date().toLocaleDateString();
+    const children: any[] = [];
+
+    children.push(
+      new Paragraph({
+        text: `${reportTitle}`,
+        heading: HeadingLevel.HEADING_1,
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 400 },
+      })
+    );
+
+    const totalIn = logs.filter(l => l.type === 'IN').reduce((sum, l) => sum + l.quantity, 0);
+    const totalInWeight = logs.filter(l => l.type === 'IN').reduce((sum, l) => sum + (l.weight * l.quantity), 0);
+    const totalOut = logs.filter(l => l.type === 'OUT').reduce((sum, l) => sum + l.quantity, 0);
+    const totalOutWeight = logs.filter(l => l.type === 'OUT').reduce((sum, l) => sum + (l.weight * l.quantity), 0);
+
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: `一、期间汇总`, bold: true, size: 32, color: "1976d2" })],
+        spacing: { before: 200, after: 200 }
+      }),
+      new Paragraph({ text: `• 期间总入库：${totalIn} 件，总计克重：${totalInWeight.toFixed(2)}g`, bullet: { level: 0 } }),
+      new Paragraph({ text: `• 期间总出库：${totalOut} 件，总计克重：${totalOutWeight.toFixed(2)}g`, bullet: { level: 0 }, spacing: { after: 400 } })
+    );
+
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: `二、详细操作流水`, bold: true, size: 32, color: "1976d2" })],
+        spacing: { before: 200, after: 200 }
+      })
+    );
+
+    if (logs.length === 0) {
+      children.push(
+        new Paragraph({ 
+          children: [new TextRun({ text: "该期间内无任何出入库记录。", color: "757575" })] 
+        })
+      );
+    } else {
+      logs.forEach(log => {
+        const time = new Date(log.timestamp).toLocaleString('zh-CN', { hour12: false });
+        const actionStr = log.type === 'IN' ? '【入库】' : '【出库】';
+        const color = log.type === 'IN' ? '2e7d32' : 'd32f2f'; 
+        
+        // 【核心】：尝试解析存储在库里的规格快照，提取出圈口信息
+        let detailStr = `(单件 ${log.weight}g)`;
+        if (log.custom_values && log.custom_values !== '{}') {
+           try {
+               const cv = JSON.parse(log.custom_values);
+               const sizeStr = cv.size ? `圈口: ${cv.size}, ` : '';
+               detailStr = `(${sizeStr}克重: ${cv.weight}g)`;
+           } catch(e) {}
+        }
+
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({ text: `${time}  `, color: "757575", size: 24 }),
+              new TextRun({ text: `${actionStr}  `, color, bold: true, size: 24 }),
+              // 将提取出的 detailStr 打印到 Word 里
+              new TextRun({ text: `${log.product_name || '未知商品'} - ${log.quantity}件 ${detailStr}`, size: 24 })
+            ],
+            spacing: { after: 120 }
+          })
+        );
+      });
+    }
+
+    const doc = new Document({ sections: [{ children }] });
+    const blob = await Packer.toBlob(doc);
+    saveAs(blob, `${reportTitle}_${dateStr.replace(/\//g, '')}.docx`);
+
+  } catch (error) {
+    console.error(error);
+    throw new Error('生成流水报告失败');
+  }
 };

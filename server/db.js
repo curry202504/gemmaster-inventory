@@ -1,3 +1,4 @@
+// 文件名: server/db.js
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
@@ -23,9 +24,15 @@ db.exec(`
     username TEXT,
     password_hash TEXT NOT NULL,
     vip_expiry INTEGER DEFAULT 0,
-    created_at INTEGER DEFAULT (unixepoch() * 1000)
+    created_at INTEGER DEFAULT (unixepoch() * 1000),
+    role TEXT DEFAULT 'OWNER', 
+    parent_id INTEGER DEFAULT NULL 
   )
 `);
+
+// 兼容老数据库：如果表已经存在，动态添加缺失的列
+try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'OWNER'"); } catch(e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN parent_id INTEGER DEFAULT NULL"); } catch(e) {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sms_logs (
@@ -114,10 +121,8 @@ const initUserCategories = (userId) => {
 
   // 1. 戒指
   insert.run(userId, '戒指', 'Ring', JSON.stringify([fieldWeight, fieldSize]));
-  
   // 2. 手链
   insert.run(userId, '手链', 'Bracelet', JSON.stringify([fieldWeight, fieldSize]));
-  
   // 3. 其他
   insert.run(userId, '项链', 'Necklace', JSON.stringify([fieldWeight]));
   insert.run(userId, '耳饰', 'Earring', JSON.stringify([fieldWeight]));
