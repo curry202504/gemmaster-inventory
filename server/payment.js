@@ -2,8 +2,9 @@
 const AlipaySdk = require('alipay-sdk').default;
 const AlipayFormData = require('alipay-sdk/lib/form').default;
 const path = require('path');
-// 【终极解法】：寻找上一级目录（项目根目录）的 .env 文件
+// 兼容本地和服务器：先找根目录，找不到再找当前目录
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 const APP_ID = process.env.ALIPAY_APP_ID;
 const PRIVATE_KEY = process.env.ALIPAY_PRIVATE_KEY;

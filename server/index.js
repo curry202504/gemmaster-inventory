@@ -1,7 +1,8 @@
 // 文件名: server/index.js
 const path = require('path');
-// 【终极解法】：寻找上一级目录（项目根目录）的 .env 文件
+// 兼容本地和服务器：先找根目录，找不到再找当前目录
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 const express = require('express');
 const cors = require('cors');
