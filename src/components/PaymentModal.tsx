@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Check, Zap, Crown, ShieldCheck, Smartphone } from 'lucide-react';
 import { Modal } from './Modal';
-// 我们不需要从外层传 showToast 进来了，为了简单，直接在这里也 import
+import { api } from '../services/api'; // 引入刚才改好的 api
 import { showToast } from './Toast';
 
 interface PaymentModalProps {
@@ -16,28 +16,15 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
   const handlePay = async (planId: 'plan_month' | 'plan_year') => {
     try {
       setLoading(true);
-      // 因为之前的 api.js 黑盒封装可能吃掉了错误，我们改用原生 fetch
-      const response = await fetch('/api/pay/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('gem_token')}`
-        },
-        body: JSON.stringify({ planId, isRecurring: false })
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data.payUrl) {
-         // 后端成功返回了支付宝链接，直接强行跳转到支付宝收银台！
+      // 调用包含了智能终端识别的接口
+      const data = await api.createOrder(planId, false);
+      
+      if (data && data.payUrl) {
+         // 拿到链接，霸道跳转
          window.location.href = data.payUrl;
-      } else {
-         // 【核心修复】：把后端具体的报错信息优雅地弹出来
-         showToast(data.error || '创建订单失败，请检查服务器密钥', 'error');
-         setLoading(false);
       }
     } catch (error: any) {
-      showToast('网络请求失败，请确认后端已启动', 'error');
+      showToast(error.message || '支付发起失败，请检查网络或密钥配置', 'error');
       setLoading(false);
     }
   };
