@@ -1,29 +1,22 @@
-// 文件名: server/index.js
+cat > /var/www/aurumflow/server/index.js << 'EOF'
+const path = require('path');
+const envPath = path.resolve(__dirname, '.env');
+require('dotenv').config({ path: envPath });
+
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const path = require('path');
 const fs = require('fs');
-
-const envPath = path.resolve(__dirname, '../.env');
-if (fs.existsSync(envPath)) {
-  require('dotenv').config({ path: envPath });
-}
 
 const { db, initUserCategories } = require('./db');
 const { sendSms } = require('./sms');
 const PaymentService = require('./payment');
 
-// =========================================================
-// 【神级热升级】：自动给旧流水表增加一个存储规格快照的字段
-// 这行代码就算表里已经有了这个字段也不会报错，完美兼容
 try { 
   db.exec("ALTER TABLE stock_movements ADD COLUMN custom_values TEXT DEFAULT '{}'"); 
-  console.log("✅ 流水表已成功升级，支持存储圈口等详细规格！");
 } catch(e) {}
-// =========================================================
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -233,9 +226,6 @@ app.post('/api/products/bulk-delete', authenticate, (req, res) => {
   }
 });
 
-// ==========================================
-// 【修复核心】：出入库写入时，增加 custom_values 圈口数据
-// ==========================================
 app.post('/api/items', authenticate, (req, res) => {
   const { productId, customValues, listingStatus } = req.body;
   const valStr = JSON.stringify(customValues);
@@ -253,7 +243,6 @@ app.post('/api/items', authenticate, (req, res) => {
   }
 
   const weight = Number(customValues.weight) || 0;
-  // 增加记录 valStr (含有圈口和克重) 到流水表
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(userId, productId, itemId, 'IN', 1, weight, Date.now(), valStr);
   res.json({ success: true, action: 'increment' });
 });
@@ -273,7 +262,6 @@ app.post('/api/items/outbound', authenticate, (req, res) => {
 
   const vals = JSON.parse(item.custom_values);
   const weight = Number(vals.weight) || 0;
-  // 增加记录 item.custom_values
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(userId, item.product_id, itemId, 'OUT', 1, weight, Date.now(), item.custom_values);
   res.json({ success: true });
 });
@@ -286,7 +274,6 @@ app.post('/api/bulk-import', authenticate, (req, res) => {
   try {
     const insertProd = db.prepare('INSERT INTO products (user_id, name, category_id, created_at) VALUES (?, ?, ?, ?)');
     const insertItem = db.prepare('INSERT INTO stock_items (user_id, product_id, quantity, custom_values, listing_status, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
-    // 同步修改批量导入的流水记录，写入 valStr
     const insertMove = db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 
     const processUpload = db.transaction((rows) => {
@@ -397,3 +384,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ AurumFlow (SaaS模式) 后端启动 | 端口: ${PORT}`);
 });
+EOF
