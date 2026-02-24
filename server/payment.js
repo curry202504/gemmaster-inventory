@@ -1,8 +1,9 @@
-cat > /var/www/aurumflow/server/payment.js << 'EOF'
+// 文件名: server/payment.js
 const AlipaySdk = require('alipay-sdk').default;
 const AlipayFormData = require('alipay-sdk/lib/form').default;
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+// 【终极解法】：寻找上一级目录（项目根目录）的 .env 文件
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const APP_ID = process.env.ALIPAY_APP_ID;
 const PRIVATE_KEY = process.env.ALIPAY_PRIVATE_KEY;
@@ -71,4 +72,3 @@ async function createPayment(userId, planId, isRecurring = false) {
 }
 
 module.exports = { createPayment };
-EOF

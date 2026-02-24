@@ -1,7 +1,7 @@
-cat > /var/www/aurumflow/server/index.js << 'EOF'
+// 文件名: server/index.js
 const path = require('path');
-const envPath = path.resolve(__dirname, '.env');
-require('dotenv').config({ path: envPath });
+// 【终极解法】：寻找上一级目录（项目根目录）的 .env 文件
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
@@ -384,4 +384,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ AurumFlow (SaaS模式) 后端启动 | 端口: ${PORT}`);
 });
-EOF
