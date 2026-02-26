@@ -64,8 +64,8 @@ async function createPayment(userId, planId, isMobile = false) {
     body: `User_ID:${userId}`,   
   });
 
-  // 设置异步通知和同步跳转地址
-  formData.addField('notifyUrl', 'http://yuliukc.cn/api/alipay-notify');
+  // 设置异步通知和同步跳转地址 (已修复：强制使用 https，防止支付宝 POST 数据在 301 跳转时丢失)
+  formData.addField('notifyUrl', 'https://yuliukc.cn/api/alipay-notify');
   formData.addField('returnUrl', RETURN_URL); 
 
   try {
