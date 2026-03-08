@@ -9,7 +9,7 @@ import {
   Plus, Search, Package, Download, ArrowRight, ArrowDownLeft, 
   Zap, TrendingUp, Layers, Store, Archive, Trash2, PieChart, CheckSquare, Square, 
   FileSpreadsheet, Users, UserPlus, Upload, CheckCircle2, AlertCircle, Info,
-  ChevronRight, LogOut, Crown, User, FileText
+  ChevronRight, LogOut, Crown, User, FileText, CalendarClock
 } from 'lucide-react';
 import { PaymentModal } from '../components/PaymentModal';
 
@@ -32,6 +32,7 @@ export const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
+  // === 各种弹窗状态 ===
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [isAddItemOpen, setIsAddItemOpen] = useState(false);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
@@ -39,6 +40,7 @@ export const Dashboard = () => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
   
   const [isFlowModalOpen, setIsFlowModalOpen] = useState(false);
   const [flowLogs, setFlowLogs] = useState<any[]>([]);
@@ -47,6 +49,7 @@ export const Dashboard = () => {
   const getTodayStr = () => new Date().toISOString().split('T')[0];
   const [flowStartDate, setFlowStartDate] = useState(getTodayStr());
   const [flowEndDate, setFlowEndDate] = useState(getTodayStr());
+  const [inventoryDate, setInventoryDate] = useState(getTodayStr()); // 新增盘点日期
 
   const [restockConfig, setRestockConfig] = useState<RestockConfig>({ minSize: 10, maxSize: 24, targetQty: 5 });
 
@@ -91,6 +94,9 @@ export const Dashboard = () => {
     }
     setUser(JSON.parse(storedUserStr));
     loadAllData();
+    const handleVipExpired = () => setIsPaymentOpen(true);
+    window.addEventListener('VIP_EXPIRED_EVENT', handleVipExpired);
+    return () => window.removeEventListener('VIP_EXPIRED_EVENT', handleVipExpired);
   }, [navigate]);
 
   const loadAllData = async () => {
@@ -105,6 +111,16 @@ export const Dashboard = () => {
         fetch('/api/products', { headers }),
         fetch('/api/items', { headers })
       ]);
+      
+      // 🚀 核心：捕捉 VIP 实时过期拦截 403 状态
+      if (catRes.status === 403 || prodRes.status === 403 || itemRes.status === 403) {
+          const err = await catRes.json().catch(()=>({}));
+          if (err.error === 'VIP_EXPIRED') {
+              setIsPaymentOpen(true); // 强行拉起支付弹窗
+              setLoading(false);
+              return; // 终止加载数据
+          }
+      }
       
       if (catRes.status === 401 || prodRes.status === 401 || itemRes.status === 401) throw new Error("AUTH_FAILED"); 
       
@@ -209,6 +225,7 @@ export const Dashboard = () => {
       setSelectedProductIds(filteredProducts.map(p => String(p.id)));
     }
   };
+
   const handleBulkDelete = async () => {
     if (selectedProductIds.length === 0) return;
     askConfirm(`高危操作警告：\n确认永久删除选中的 ${selectedProductIds.length} 款产品及库存吗？\n该操作不可逆！`, async () => {
@@ -224,7 +241,7 @@ export const Dashboard = () => {
             await loadAllData(); 
           } else { 
             const err = await res.json();
-            showToast(err.error || '删除失败，可能无权限', 'error');
+            showToast(err.message || err.error || '删除失败', 'error');
           }
         } catch (error) { showToast('网络错误', 'error'); }
     });
@@ -239,7 +256,7 @@ export const Dashboard = () => {
           body: JSON.stringify({ name: newProductName, categoryId: newProductCategory })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || '创建失败');
+        if (!res.ok) throw new Error(data.message || data.error || '创建失败');
         showToast('产品登记成功', 'success');
         setNewProductName('');
         setIsAddProductOpen(false);
@@ -256,7 +273,7 @@ export const Dashboard = () => {
           body: JSON.stringify({ productId: activeProduct.id, customValues: newItemValues, listingStatus: newItemListingStatus })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || '入库失败');
+        if (!res.ok) throw new Error(data.message || data.error || '入库失败');
         showToast('办理入库成功', 'success');
         setNewItemValues({});
         setIsAddItemOpen(false);
@@ -273,7 +290,7 @@ export const Dashboard = () => {
               body: JSON.stringify({ itemId })
             });
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '出库失败');
+            if (!res.ok) throw new Error(data.message || data.error || '出库失败');
             showToast('商品已成功出库', 'success');
             await loadAllData();
         } catch (e: any) { showToast(e.message, 'error'); }
@@ -288,16 +305,20 @@ export const Dashboard = () => {
           if (res.ok) { 
             showToast('产品已永久删除', 'success');
             await loadAllData(); 
-          } else { showToast('删除失败，可能无权限', 'error'); }
+          } else { 
+            const err = await res.json();
+            showToast(err.message || err.error || '删除失败', 'error'); 
+          }
         } catch (error) { showToast('网络错误', 'error'); }
     });
   };
 
+  // 🚀 精准当前盘点
   const handleExportInventoryCSV = () => {
     const targetProducts = selectedProductIds.length > 0 ? products.filter(p => selectedProductIds.includes(String(p.id))) : products;
     if (targetProducts.length === 0) return showToast('请先选择或登记产品', 'error');
 
-    let csvContent = '\uFEFF品名,圈口/尺寸,克重(g),状态,登记系统时间\n';
+    let csvContent = '\uFEFF品名,圈口/尺寸,克重(g),状态,库存数量\n';
 
     targetProducts.forEach(prod => {
       const prodItems = items.filter(i => String(i.productId) === String(prod.id));
@@ -305,9 +326,7 @@ export const Dashboard = () => {
         const size = item.customValues?.size || '-';
         const weight = item.customValues?.weight || '-';
         const statusStr = item.listingStatus === ListingStatus.LISTED ? '已上架' : '未上架';
-        for (let j = 0; j < item.quantity; j++) {
-          csvContent += `"${prod.name}","${size}","${weight}","${statusStr}","${new Date(item.updatedAt).toLocaleString()}"\n`;
-        }
+        csvContent += `"${prod.name}","${size}","${weight}","${statusStr}","${item.quantity}"\n`;
       });
     });
 
@@ -315,10 +334,47 @@ export const Dashboard = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `库存盘点表_${new Date().toLocaleDateString()}.csv`;
+    link.download = `系统当前库存盘点表_${new Date().toLocaleDateString()}.csv`;
     link.click();
-    showToast('盘点表已开始下载', 'success');
+    showToast('即时盘点表已下载', 'success');
   };
+
+  // 🚀 历史数据演算盘点
+  const executeHistoricalInventory = async () => {
+    try {
+        setExporting(true);
+        const targetTimestamp = new Date(inventoryDate).setHours(23, 59, 59, 999);
+        const res = await fetch('/api/reports/historical-inventory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('gem_token')}` },
+            body: JSON.stringify({ date: targetTimestamp })
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.message || data.error);
+        
+        let csvContent = '\uFEFF品名,圈口/尺寸,克重(g),当时历史结余,演算溯源日期\n';
+        data.forEach((row: any) => {
+            const prodName = products.find(p => String(p.id) === String(row.product_id))?.name || '未知产品';
+            const cv = JSON.parse(row.custom_values || '{}');
+            const size = cv.size || '-';
+            const weight = cv.weight || '-';
+            csvContent += `"${prodName}","${size}","${weight}","${row.calc_qty}","${inventoryDate}"\n`;
+        });
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `历史库存演溯盘点表_${inventoryDate}.csv`;
+        link.click();
+        showToast('时光机盘点表生成成功', 'success');
+        setIsInventoryModalOpen(false);
+    } catch(e: any) { 
+        showToast(e.message || '演算盘点失败', 'error') 
+    } finally {
+        setExporting(false);
+    }
+  }
 
   const fetchFlowLogs = async (startStr: string, endStr: string) => {
     setIsFlowLoading(true);
@@ -385,11 +441,11 @@ export const Dashboard = () => {
         body: JSON.stringify(empForm)
       });
       const data = await res.json();
-      if(data.success) {
+      if(res.ok) {
         showToast('成功开通员工终端', 'success');
         setEmpForm({phone:'', username:'', password:''});
         loadEmployees();
-      } else { showToast(data.error, 'error'); }
+      } else { showToast(data.message || data.error, 'error'); }
     } catch (e) {}
   };
 
@@ -408,13 +464,24 @@ export const Dashboard = () => {
         for(let i = 1; i < lines.length; i++) {
             const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
             if (cols[0]) {
-               const rawStatus = cols[3] ? cols[3].trim() : '';
-               const finalStatus = rawStatus || '上架';
+               let qty = 1;
+               let finalStatus = '上架';
+               
+               // 智能解析逻辑：如果第四列传了“上架/未上架”，走老逻辑；如果传了数字，作为数量叠加
+               if (cols[3]) {
+                   if (cols[3] === '上架' || cols[3] === '未上架') {
+                       finalStatus = cols[3];
+                   } else {
+                       qty = parseInt(cols[3]) || 1;
+                       if (cols[4]) finalStatus = cols[4];
+                   }
+               }
 
                uploadData.push({
                    name: cols[0],
                    size: cols[1] || '',
                    weight: cols[2] || '0',
+                   quantity: qty,
                    status: finalStatus
                });
             }
@@ -427,13 +494,13 @@ export const Dashboard = () => {
         });
         
         const data = await res.json();
-        if (data.success) {
-            showToast(`极速建库完成！导入 ${uploadData.length} 件商品`, 'success');
+        if (res.ok) {
+            showToast(`极速建库完成！导入并累加 ${uploadData.length} 项规格`, 'success');
             setIsImportModalOpen(false);
             if(fileInputRef.current) fileInputRef.current.value = '';
             await loadAllData();
         } else {
-            showToast('导入失败: ' + data.error, 'error');
+            showToast('导入失败: ' + (data.message || data.error), 'error');
         }
       } catch (err: any) {
         showToast(err.message || '表格格式有误，请下载模板', 'error');
@@ -443,11 +510,11 @@ export const Dashboard = () => {
   };
 
   const downloadTemplate = () => {
-      const template = '\uFEFF品名(必填),圈口/尺寸(选填),克重(选填),上架情况(选填 默认上架)\n古法三生石戒指,12,2.5,上架\n麻花手镯,58,30.0,\n足金小挂件,,1.2,未上架';
+      const template = '\uFEFF品名(必填),圈口/尺寸(选填),克重(选填),数量(选填 默认1),上架情况(选填 默认"上架")\n古法三生石戒指,12,2.5,5,上架\n麻花手镯,58,30.0,2,\n足金小挂件,,1.2,1,未上架';
       const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `批量极速入库模板.csv`;
+      link.download = `批量极速入库模板(包含叠加数量).csv`;
       link.click();
       showToast('模板下载完成', 'info');
   };
@@ -485,9 +552,11 @@ export const Dashboard = () => {
                  </div>
               </div>
               
-              <button onClick={() => confirmOutbound(Number(item.id), item.quantity)} className="w-full py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all font-bold text-[10px] lg:text-xs shadow-sm">
-                 出库
-              </button>
+              {isOwnerOrLegacy && (
+                <button onClick={() => confirmOutbound(Number(item.id), item.quantity)} className="w-full py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all font-bold text-[10px] lg:text-xs shadow-sm">
+                   出库
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -503,53 +572,7 @@ export const Dashboard = () => {
      return <Layout><div className="flex h-[50vh] items-center justify-center text-slate-400 font-bold tracking-widest text-sm animate-pulse">正在进入系统核心...</div></Layout>;
   }
 
-  if (isProfileTab) {
-    return (
-      <Layout>
-         {renderToast()}
-         <div className="max-w-md mx-auto pt-6 space-y-6 animate-in slide-in-from-right-4 duration-300">
-            <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm flex flex-col items-center text-center">
-              <div className="w-20 h-20 bg-slate-50 rounded-full border-2 border-slate-100 flex items-center justify-center mb-4">
-                 <User className="w-8 h-8 text-slate-400" />
-              </div>
-              <h2 className="text-xl font-black text-slate-800 tracking-tight">{user?.username || '未命名'}</h2>
-              <p className="text-xs font-bold text-slate-400 mt-1">{user?.phone}</p>
-              <div className="mt-4 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[10px] font-bold border border-amber-100">
-                {roleDisplay} {user?.vip ? '· PRO会员' : ''}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {isOwnerOrLegacy && (
-                <button onClick={() => { loadEmployees(); setIsEmployeeModalOpen(true); }} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-blue-50 rounded-xl"><Users className="w-5 h-5 text-blue-500" /></div>
-                    <span className="font-bold text-slate-700 text-sm">员工终端管理</span>
-                  </div>
-                  <ChevronRight className="w-5 h-5 text-slate-300" />
-                </button>
-              )}
-              {isOwnerOrLegacy && (
-                <button onClick={() => setIsPaymentOpen(true)} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-amber-50 rounded-xl"><Crown className="w-5 h-5 text-amber-500" /></div>
-                    <span className="font-bold text-slate-700 text-sm">PRO 续费与升级</span>
-                  </div>
-                  <ChevronRight className="w-5 h-5 text-slate-300" />
-                </button>
-              )}
-              <button onClick={handleLogout} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all mt-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-red-50 rounded-xl"><LogOut className="w-5 h-5 text-red-500" /></div>
-                  <span className="font-bold text-red-600 text-sm">安全退出登录</span>
-                </div>
-              </button>
-            </div>
-         </div>
-      </Layout>
-    );
-  }
-
+  // 🚀 全局 UI 重构：让弹窗悬浮于所有 Tab 之上，彻底修复移动端点击无效的 Bug
   return (
     <Layout>
       {renderToast()}
@@ -571,192 +594,9 @@ export const Dashboard = () => {
            </div>
         </div>
       </Modal>
-
-      <div className="w-full max-w-full overflow-x-hidden">
-        <div className="hidden lg:grid mb-6 grid-cols-12 gap-4">
-          <div className="col-span-4 bg-white border border-slate-200 shadow-sm p-5 rounded-2xl flex flex-col justify-center relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-[200px] h-[200px] bg-amber-50 rounded-full blur-[60px] -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
-            <div className="relative z-10 flex items-center gap-3">
-                <div className="bg-gradient-to-br from-amber-400 to-amber-500 p-2.5 rounded-xl shadow-md">
-                    <Zap className="h-5 w-5 text-white fill-white" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-black text-slate-800 tracking-tight leading-tight">
-                    {roleDisplay} {user?.vip ? '(PRO)' : ''}
-                  </h2>
-                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">AurumFlow 御流管家</p>
-                </div>
-            </div>
-            <div className="relative z-10 flex gap-2 mt-4 pt-3 border-t border-slate-100">
-                {isOwnerOrLegacy && (
-                  <button onClick={() => { 
-                     const timeLeft = user?.vip_expiry ? (user.vip_expiry - Date.now()) : 0;
-                     if (timeLeft < 3024000000) {
-                        setIsPaymentOpen(true);
-                        showToast('员工管理属于【PRO年度会员】专属特权，请先升级！', 'error');
-                        return;
-                     }
-                     loadEmployees(); 
-                     setIsEmployeeModalOpen(true); 
-                  }} className="flex-1 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-xl font-bold text-xs hover:bg-slate-100 transition-all flex items-center justify-center gap-1.5 shadow-sm">
-                    <Users className="w-3.5 h-3.5" /> 员工管理
-                  </button>
-                )}
-                <button onClick={() => setIsPaymentOpen(true)} className="flex-1 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md">
-                  续费升级
-                </button>
-            </div>
-          </div>
-
-          <div className="col-span-8 grid grid-cols-3 gap-4">
-            <div onClick={() => setIsStockDetailOpen(true)} className="bg-white border border-slate-200 shadow-sm hover:shadow-md p-4 rounded-2xl cursor-pointer transition-all flex flex-col items-center justify-center text-center">
-               <Package className="h-5 w-5 text-amber-500 mb-2" />
-               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">总储备 (详情)</p>
-               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.totalCount}</h3>
-            </div>
-            <div className="bg-white border border-slate-200 shadow-sm p-4 rounded-2xl flex flex-col items-center justify-center text-center">
-               <TrendingUp className="h-5 w-5 text-emerald-500 mb-2" />
-               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">总克重</p>
-               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.totalWeight.toFixed(2)}</h3>
-            </div>
-            <div className="bg-white border border-slate-200 shadow-sm p-4 rounded-2xl flex flex-col items-center justify-center text-center">
-               <Layers className="h-5 w-5 text-blue-500 mb-2" />
-               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">在售款式</p>
-               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.activeProductCount}</h3>
-            </div>
-          </div>
-        </div>
-
-        <div className="lg:hidden mb-4 grid grid-cols-3 gap-2 bg-white border border-slate-200 shadow-sm p-3 rounded-xl">
-           <div onClick={() => setIsStockDetailOpen(true)} className="flex flex-col items-center border-r border-slate-100 pr-2">
-             <span className="text-[10px] text-slate-400 font-bold mb-0.5">总储备</span>
-             <span className="text-lg font-black text-slate-800 leading-none">{stats.totalCount}</span>
-           </div>
-           <div className="flex flex-col items-center border-r border-slate-100 px-2">
-             <span className="text-[10px] text-slate-400 font-bold mb-0.5">总克重</span>
-             <span className="text-lg font-black text-slate-800 leading-none">{stats.totalWeight.toFixed(1)}</span>
-           </div>
-           <div className="flex flex-col items-center pl-2">
-             <span className="text-[10px] text-slate-400 font-bold mb-0.5">在售款</span>
-             <span className="text-lg font-black text-slate-800 leading-none">{stats.activeProductCount}</span>
-           </div>
-        </div>
-
-        {view === 'DASHBOARD' ? (
-          <div className="space-y-4 lg:space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-white border border-slate-200 shadow-sm p-2 lg:p-3 rounded-xl lg:rounded-2xl flex flex-col lg:flex-row lg:items-center gap-2 lg:gap-3">
-              <div className="flex items-center justify-between lg:justify-start w-full lg:w-auto px-1">
-                 <button onClick={handleSelectAll} className="flex items-center gap-1.5 px-2 py-1.5 text-slate-500 hover:text-amber-600 transition-colors rounded-lg hover:bg-slate-50" title="全选/反选">
-                   {selectedProductIds.length > 0 && selectedProductIds.length === filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="w-4 h-4 lg:w-5 lg:h-5 text-amber-500" /> : <Square className="w-4 h-4 lg:w-5 lg:h-5" />}
-                   <span className="text-xs lg:text-sm font-bold whitespace-nowrap">全选</span>
-                 </button>
-                 
-                 {selectedProductIds.length > 0 && isOwnerOrLegacy && (
-                    <button onClick={handleBulkDelete} className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 border border-red-100 rounded-lg hover:bg-red-100 transition-colors text-[10px] lg:text-xs font-bold whitespace-nowrap">
-                      <Trash2 className="w-3.5 h-3.5" /> 批量删除 ({selectedProductIds.length})
-                    </button>
-                 )}
-              </div>
-              
-              <div className="relative w-full lg:flex-1 lg:mx-2">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                <input type="text" placeholder="搜索品名..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 outline-none focus:border-amber-400 focus:bg-white transition-all text-xs lg:text-sm text-slate-800" />
-              </div>
-              
-              <div className="grid grid-cols-2 lg:flex gap-2 w-full lg:w-auto">
-                <button onClick={openFlowModal} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-50 text-blue-700 rounded-xl border border-blue-200 hover:bg-blue-100 font-bold text-xs transition-all whitespace-nowrap">
-                  <FileText className="h-4 w-4" /> 查流水
-                </button>
-                <button onClick={handleExportInventoryCSV} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-200 hover:bg-emerald-100 font-bold text-xs transition-all whitespace-nowrap">
-                  <FileSpreadsheet className="h-4 w-4" /> 盘点
-                </button>
-                <button onClick={() => setIsExportModalOpen(true)} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-slate-50 text-slate-700 rounded-xl border border-slate-200 hover:bg-slate-100 font-bold text-xs transition-all whitespace-nowrap">
-                  <Download className="h-3.5 w-3.5 text-amber-500" /> 补货
-                </button>
-                <button onClick={() => setIsImportModalOpen(true)} className="flex items-center justify-center px-3 py-2.5 bg-white border border-slate-300 hover:border-amber-400 hover:text-amber-600 text-slate-700 rounded-xl font-bold text-xs transition-all whitespace-nowrap shadow-sm">
-                   <Upload className="h-4 w-4 mr-1" /> 导入
-                </button>
-                <button onClick={() => setIsAddProductOpen(true)} className="flex items-center justify-center px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-xl font-bold text-xs transition-all shadow-sm whitespace-nowrap">
-                   <Plus className="h-4 w-4 mr-0.5" /> 新产品
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-6 pt-2">
-                {categories.map(cat => {
-                  const catProds = filteredProducts.filter(p => String(p.categoryId) === String(cat.id));
-                  if (catProds.length === 0) return null;
-                  return (
-                    <div key={cat.id} className="space-y-3">
-                      <h4 className="flex items-center gap-2 text-[10px] lg:text-xs font-bold text-slate-400 tracking-widest ml-1">
-                        <span>{cat.name}</span>
-                        <span className="h-[1px] flex-1 bg-slate-200"></span>
-                      </h4>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-8 2xl:grid-cols-10 gap-2 lg:gap-3">
-                        {catProds.map(prod => {
-                          const count = items.filter(i => String(i.productId) === String(prod.id)).reduce((s, i) => s + i.quantity, 0);
-                          const isSelected = selectedProductIds.includes(String(prod.id));
-                          return (
-                            <div 
-                              key={prod.id}
-                              onClick={() => { setSelectedProductId(String(prod.id)); setView('PRODUCT_DETAIL'); }}
-                              className={`group relative cursor-pointer overflow-hidden rounded-xl border p-2.5 lg:p-3.5 flex flex-col justify-between transition-all hover:-translate-y-0.5 hover:shadow-md lg:aspect-square ${isSelected ? 'bg-amber-50/50 border-amber-400 shadow-sm' : 'bg-white border-slate-200 hover:border-amber-300 shadow-sm'}`}
-                            >
-                              <div onClick={(e) => toggleSelectProduct(e, String(prod.id))} className="absolute top-1.5 left-1.5 lg:top-2.5 lg:left-2.5 z-20 text-slate-300 hover:text-amber-500">
-                                {isSelected ? <CheckSquare className="w-4 h-4 text-amber-500" /> : <Square className="w-4 h-4" />}
-                              </div>
-                              
-                              {isOwnerOrLegacy && (
-                                <button onClick={(e) => confirmDeleteProduct(e, Number(prod.id), prod.name)} className="absolute top-0.5 right-0.5 lg:top-1 lg:right-1 p-1.5 rounded-lg text-slate-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100 z-10">
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                              
-                              <div className="flex-1 flex flex-col justify-center items-center text-center mt-3 lg:mt-5 px-1 lg:px-2">
-                                <h3 className="text-[13px] lg:text-lg font-black text-slate-800 leading-snug lg:leading-tight group-hover:text-amber-600 transition-colors line-clamp-2">{prod.name}</h3>
-                              </div>
-
-                              <div className="flex items-end justify-between pt-2 border-t border-slate-100 mt-2">
-                                <div className="flex items-baseline gap-0.5">
-                                  <span className={`text-xl lg:text-2xl font-black tabular-nums leading-none ${count > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
-                                    {count}
-                                  </span>
-                                  <span className="text-[8px] lg:text-[9px] text-slate-400 font-bold mb-0.5">件</span>
-                                </div>
-                                <ArrowRight className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-slate-200 group-hover:text-amber-500 transition-colors mb-0.5" />
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })}
-            </div>
-          </div>
-        ) : (
-          <div className="animate-in fade-in slide-in-from-right-8 duration-300">
-              <div className="flex flex-col md:flex-row md:items-center gap-3 lg:gap-4 mb-4 lg:mb-6 bg-white p-3 lg:p-4 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3">
-                    <button onClick={() => setView('DASHBOARD')} className="w-10 h-10 flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200 text-slate-500 hover:text-amber-600 hover:bg-amber-50 transition-all shrink-0">
-                      <ArrowDownLeft className="h-5 w-5" />
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <h1 className="text-xl lg:text-2xl font-black text-slate-800 tracking-tight leading-none truncate">{activeProduct?.name}</h1>
-                      <span className="inline-block mt-1.5 px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold border border-amber-100">{activeCategory?.name}</span>
-                    </div>
-                </div>
-                <button onClick={() => setIsAddItemOpen(true)} className="w-full md:w-auto px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-1.5 whitespace-nowrap">
-                  <Plus className="h-4 w-4" /> 办理入库
-                </button>
-              </div>
-              
-              <StockGrid title="已上架库存" data={listedItems} colorClass="text-emerald-600" icon={Store} />
-              <StockGrid title="仓库储备 (未上架)" data={unlistedItems} colorClass="text-slate-500" icon={Archive} />
-          </div>
-        )}
-
-        <Modal isOpen={isEmployeeModalOpen} onClose={() => setIsEmployeeModalOpen(false)} title="员工终端管理">
+      
+      {/* 挂载各种全局功能弹窗 */}
+      <Modal isOpen={isEmployeeModalOpen} onClose={() => setIsEmployeeModalOpen(false)} title="员工终端管理">
           <div className="space-y-5 text-slate-800">
             <div className="bg-amber-50 text-amber-800 p-3 rounded-xl border border-amber-200 text-[11px] font-bold">
                注意：子账号功能需【PRO 年度会员】方可创建与使用。
@@ -796,9 +636,9 @@ export const Dashboard = () => {
               )}
             </div>
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="表格导入建库">
+      <Modal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} title="表格极速建库与盘盈">
           <div className="space-y-5">
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <p className="text-[11px] text-slate-600 mb-2 font-bold">1. 选择存入分类</p>
@@ -814,11 +654,11 @@ export const Dashboard = () => {
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                  <div className="flex justify-between items-center mb-2">
                     <p className="text-[11px] text-slate-600 font-bold">2. 上传数据表格</p>
-                    <button onClick={downloadTemplate} className="text-[10px] text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-100 hover:bg-amber-100 transition-colors">下载标准模板</button>
+                    <button onClick={downloadTemplate} className="text-[10px] text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-100 hover:bg-amber-100 transition-colors">下载新版模板(含数量)</button>
                  </div>
                  <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
-                    请确保 CSV 包含 1~4 列，从左到右依次为：<br/>
-                    <strong className="text-slate-700">品名(必填)、圈口/尺寸、克重、上架情况 (选填 默认"上架")</strong>
+                    请确保 CSV 包含 1~5 列，从左到右依次为：<br/>
+                    <strong className="text-slate-700">品名(必填)、圈口/尺寸、克重、数量(自动叠加)、上架情况</strong>
                  </p>
                  
                  <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-slate-300 border-dashed rounded-xl cursor-pointer bg-white hover:bg-slate-50 hover:border-amber-400 transition-all">
@@ -831,9 +671,42 @@ export const Dashboard = () => {
                  </label>
              </div>
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isStockDetailOpen} onClose={() => setIsStockDetailOpen(false)} title="库存储备详情">
+      <Modal isOpen={isInventoryModalOpen} onClose={() => setIsInventoryModalOpen(false)} title="智能盘点中心">
+         <div className="space-y-6">
+            <div className="bg-white border border-emerald-200 p-4 rounded-2xl shadow-sm">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-6 h-6 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center"><CheckSquare className="w-3.5 h-3.5"/></div>
+                  <h4 className="text-sm font-black text-slate-800">当前即时盘点 (所见即所得)</h4>
+                </div>
+                <p className="text-[10px] text-slate-500 mb-4 pl-8">直接导出系统当前时刻，您在首页勾选的货品库存详情表。</p>
+                <button onClick={() => { handleExportInventoryCSV(); setIsInventoryModalOpen(false); }} className="w-full py-3 bg-emerald-50 text-emerald-600 border border-emerald-200 hover:bg-emerald-100 rounded-xl font-bold text-xs transition-colors">下载即时盘点表</button>
+            </div>
+
+            <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-200"></div>
+                <span className="flex-shrink-0 mx-4 text-slate-400 text-xs font-bold tracking-widest">时光机盘点</span>
+                <div className="flex-grow border-t border-slate-200"></div>
+            </div>
+
+            <div className="bg-white border border-blue-200 p-4 rounded-2xl shadow-sm">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center"><CalendarClock className="w-3.5 h-3.5"/></div>
+                  <h4 className="text-sm font-black text-slate-800">历史结余演算 (基于流水)</h4>
+                </div>
+                <p className="text-[10px] text-slate-500 mb-4 pl-8">选择任意历史日期，系统将根据出入库流水数据，自动反推演算出该日结束时的全量库存结余。</p>
+                <div className="flex items-center gap-3 pl-8">
+                   <input type="date" value={inventoryDate} onChange={(e) => setInventoryDate(e.target.value)} className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 flex-1" />
+                   <button onClick={executeHistoricalInventory} disabled={exporting} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition-colors shadow-md disabled:opacity-50 flex shrink-0 items-center">
+                     {exporting ? '演算中...' : '演算并导出'}
+                   </button>
+                </div>
+            </div>
+         </div>
+      </Modal>
+
+      <Modal isOpen={isStockDetailOpen} onClose={() => setIsStockDetailOpen(false)} title="库存储备详情">
           <div className="space-y-3">
             {categoryStats.map((cat, idx) => (
               <div key={idx} className="flex items-center justify-between p-3.5 bg-white border border-slate-200 rounded-xl shadow-sm">
@@ -850,9 +723,9 @@ export const Dashboard = () => {
             ))}
             {categoryStats.length === 0 && <p className="text-center text-slate-400 py-6 text-xs">暂无库存</p>}
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isFlowModalOpen} onClose={() => setIsFlowModalOpen(false)} title="出入库流水明细">
+      <Modal isOpen={isFlowModalOpen} onClose={() => setIsFlowModalOpen(false)} title="出入库流水明细">
           <div className="space-y-4">
              <div className="flex items-center gap-2">
                <input type="date" value={flowStartDate} onChange={(e) => {
@@ -928,9 +801,9 @@ export const Dashboard = () => {
                 {exporting ? '正在生成报表...' : <><FileText className="w-4 h-4"/> 导出 Word 流水明细</>}
              </button>
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} title="生成智能补货单">
+      <Modal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} title="生成智能补货单">
           <div className="space-y-5">
             <p className="text-slate-500 text-xs">系统将自动分析产品的缺口，生成补货建议表。</p>
             <div className="grid grid-cols-2 gap-3">
@@ -951,9 +824,9 @@ export const Dashboard = () => {
               {exporting ? '正在生成...' : '立即生成'}
             </button>
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isAddProductOpen} onClose={() => setIsAddProductOpen(false)} title="单品入库登记">
+      <Modal isOpen={isAddProductOpen} onClose={() => setIsAddProductOpen(false)} title="单品入库登记">
           <div className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-slate-500 mb-1.5">产品名称</label>
@@ -973,9 +846,9 @@ export const Dashboard = () => {
             </div>
             <button onClick={handleCreateProduct} className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-sm mt-2 transition-colors shadow-md">确认创建</button>
           </div>
-        </Modal>
+      </Modal>
 
-        <Modal isOpen={isAddItemOpen} onClose={() => setIsAddItemOpen(false)} title={`办理入库: ${activeProduct?.name}`}>
+      <Modal isOpen={isAddItemOpen} onClose={() => setIsAddItemOpen(false)} title={`办理入库: ${activeProduct?.name}`}>
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-3">
               {activeCategory?.fields.map(field => (
@@ -1003,10 +876,249 @@ export const Dashboard = () => {
             </div>
             <button onClick={handleInbound} className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-sm mt-2 shadow-md">确认入库</button>
           </div>
-        </Modal>
+      </Modal>
 
-        <PaymentModal isOpen={isPaymentOpen} onClose={() => setIsPaymentOpen(false)} />
+      <PaymentModal isOpen={isPaymentOpen} onClose={() => setIsPaymentOpen(false)} />
+
+
+      {/* ======================================================== */}
+      {/* 🚀 主体内容区域切换：无论是 Profile 还是 Dashboard，都能调起上面的 Modal！ */}
+      {/* ======================================================== */}
+      
+      {isProfileTab ? (
+         <div className="max-w-md mx-auto pt-6 space-y-6 animate-in slide-in-from-right-4 duration-300">
+            <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm flex flex-col items-center text-center">
+              <div className="w-20 h-20 bg-slate-50 rounded-full border-2 border-slate-100 flex items-center justify-center mb-4">
+                 <User className="w-8 h-8 text-slate-400" />
+              </div>
+              <h2 className="text-xl font-black text-slate-800 tracking-tight">{user?.username || '未命名'}</h2>
+              <p className="text-xs font-bold text-slate-400 mt-1">{user?.phone}</p>
+              <div className="mt-4 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[10px] font-bold border border-amber-100">
+                {roleDisplay} {user?.vip ? '· PRO会员' : ''}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {isOwnerOrLegacy && (
+                <button onClick={() => { loadEmployees(); setIsEmployeeModalOpen(true); }} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-50 rounded-xl"><Users className="w-5 h-5 text-blue-500" /></div>
+                    <span className="font-bold text-slate-700 text-sm">员工终端管理</span>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-300" />
+                </button>
+              )}
+              {isOwnerOrLegacy && (
+                <button onClick={() => setIsPaymentOpen(true)} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-amber-50 rounded-xl"><Crown className="w-5 h-5 text-amber-500" /></div>
+                    <span className="font-bold text-slate-700 text-sm">PRO 续费与升级</span>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-300" />
+                </button>
+              )}
+              <button onClick={handleLogout} className="w-full bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between active:scale-95 transition-all mt-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-red-50 rounded-xl"><LogOut className="w-5 h-5 text-red-500" /></div>
+                  <span className="font-bold text-red-600 text-sm">安全退出登录</span>
+                </div>
+              </button>
+            </div>
+         </div>
+      ) : (
+      <div className="w-full max-w-full overflow-x-hidden">
+        <div className="hidden lg:grid mb-6 grid-cols-12 gap-4">
+          <div className="col-span-4 bg-white border border-slate-200 shadow-sm p-5 rounded-2xl flex flex-col justify-center relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-[200px] h-[200px] bg-amber-50 rounded-full blur-[60px] -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+            <div className="relative z-10 flex items-center gap-3">
+                <div className="bg-gradient-to-br from-amber-400 to-amber-500 p-2.5 rounded-xl shadow-md">
+                    <Zap className="h-5 w-5 text-white fill-white" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-black text-slate-800 tracking-tight leading-tight">
+                    {roleDisplay} {user?.vip ? '(PRO)' : ''}
+                  </h2>
+                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">AurumFlow 御流管家</p>
+                </div>
+            </div>
+            <div className="relative z-10 flex gap-2 mt-4 pt-3 border-t border-slate-100">
+                {isOwnerOrLegacy && (
+                  <button onClick={() => { 
+                     loadEmployees(); 
+                     setIsEmployeeModalOpen(true); 
+                  }} className="flex-1 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-xl font-bold text-xs hover:bg-slate-100 transition-all flex items-center justify-center gap-1.5 shadow-sm">
+                    <Users className="w-3.5 h-3.5" /> 员工管理
+                  </button>
+                )}
+                {isOwnerOrLegacy && (
+                    <button onClick={() => setIsPaymentOpen(true)} className="flex-1 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md">
+                      续费升级
+                    </button>
+                )}
+            </div>
+          </div>
+
+          <div className="col-span-8 grid grid-cols-3 gap-4">
+            <div onClick={() => setIsStockDetailOpen(true)} className="bg-white border border-slate-200 shadow-sm hover:shadow-md p-4 rounded-2xl cursor-pointer transition-all flex flex-col items-center justify-center text-center">
+               <Package className="h-5 w-5 text-amber-500 mb-2" />
+               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">总储备 (详情)</p>
+               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.totalCount}</h3>
+            </div>
+            <div className="bg-white border border-slate-200 shadow-sm p-4 rounded-2xl flex flex-col items-center justify-center text-center">
+               <TrendingUp className="h-5 w-5 text-emerald-500 mb-2" />
+               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">总克重</p>
+               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.totalWeight.toFixed(2)}</h3>
+            </div>
+            <div className="bg-white border border-slate-200 shadow-sm p-4 rounded-2xl flex flex-col items-center justify-center text-center">
+               <Layers className="h-5 w-5 text-blue-500 mb-2" />
+               <p className="text-slate-400 text-[10px] font-bold tracking-widest mb-1">在售款式</p>
+               <h3 className="text-3xl font-black text-slate-800 tabular-nums leading-none">{stats.activeProductCount}</h3>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:hidden mb-4 grid grid-cols-3 gap-2 bg-white border border-slate-200 shadow-sm p-3 rounded-xl">
+           <div onClick={() => setIsStockDetailOpen(true)} className="flex flex-col items-center border-r border-slate-100 pr-2">
+             <span className="text-[10px] text-slate-400 font-bold mb-0.5">总储备</span>
+             <span className="text-lg font-black text-slate-800 leading-none">{stats.totalCount}</span>
+           </div>
+           <div className="flex flex-col items-center border-r border-slate-100 px-2">
+             <span className="text-[10px] text-slate-400 font-bold mb-0.5">总克重</span>
+             <span className="text-lg font-black text-slate-800 leading-none">{stats.totalWeight.toFixed(1)}</span>
+           </div>
+           <div className="flex flex-col items-center pl-2">
+             <span className="text-[10px] text-slate-400 font-bold mb-0.5">在售款</span>
+             <span className="text-lg font-black text-slate-800 leading-none">{stats.activeProductCount}</span>
+           </div>
+        </div>
+
+        {view === 'DASHBOARD' ? (
+          <div className="space-y-4 lg:space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="bg-white border border-slate-200 shadow-sm p-2 lg:p-3 rounded-xl lg:rounded-2xl flex flex-col lg:flex-row lg:items-center gap-2 lg:gap-3">
+              <div className="flex items-center justify-between lg:justify-start w-full lg:w-auto px-1">
+                 <button onClick={handleSelectAll} className="flex items-center gap-1.5 px-2 py-1.5 text-slate-500 hover:text-amber-600 transition-colors rounded-lg hover:bg-slate-50" title="全选/反选">
+                   {/* 🚀 核心优化：复选框放大到 w-6 h-6 */}
+                   {selectedProductIds.length > 0 && selectedProductIds.length === filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="w-6 h-6 text-amber-500" /> : <Square className="w-6 h-6" />}
+                   <span className="text-xs lg:text-sm font-bold whitespace-nowrap">全选</span>
+                 </button>
+                 
+                 {selectedProductIds.length > 0 && isOwnerOrLegacy && (
+                    <button onClick={handleBulkDelete} className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 border border-red-100 rounded-lg hover:bg-red-100 transition-colors text-[10px] lg:text-xs font-bold whitespace-nowrap">
+                      <Trash2 className="w-3.5 h-3.5" /> 批量删除 ({selectedProductIds.length})
+                    </button>
+                 )}
+              </div>
+              
+              <div className="relative w-full lg:flex-1 lg:mx-2">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                <input type="text" placeholder="搜索品名..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 outline-none focus:border-amber-400 focus:bg-white transition-all text-xs lg:text-sm text-slate-800" />
+              </div>
+              
+              <div className="grid grid-cols-2 lg:flex gap-2 w-full lg:w-auto">
+                <button onClick={openFlowModal} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-50 text-blue-700 rounded-xl border border-blue-200 hover:bg-blue-100 font-bold text-xs transition-all whitespace-nowrap">
+                  <FileText className="h-4 w-4" /> 查流水
+                </button>
+                {/* 🚀 时光机盘点按钮 */}
+                <button onClick={() => setIsInventoryModalOpen(true)} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-200 hover:bg-emerald-100 font-bold text-xs transition-all whitespace-nowrap">
+                  <FileSpreadsheet className="h-4 w-4" /> 盘点
+                </button>
+                <button onClick={() => setIsExportModalOpen(true)} className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-slate-50 text-slate-700 rounded-xl border border-slate-200 hover:bg-slate-100 font-bold text-xs transition-all whitespace-nowrap">
+                  <Download className="h-3.5 w-3.5 text-amber-500" /> 补货
+                </button>
+                
+                {/* 仅老板可见的操作 */}
+                {isOwnerOrLegacy && (
+                    <>
+                        <button onClick={() => setIsImportModalOpen(true)} className="flex items-center justify-center px-3 py-2.5 bg-white border border-slate-300 hover:border-amber-400 hover:text-amber-600 text-slate-700 rounded-xl font-bold text-xs transition-all whitespace-nowrap shadow-sm">
+                           <Upload className="h-4 w-4 mr-1" /> 导入
+                        </button>
+                        <button onClick={() => setIsAddProductOpen(true)} className="flex items-center justify-center px-4 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-xl font-bold text-xs transition-all shadow-sm whitespace-nowrap">
+                           <Plus className="h-4 w-4 mr-0.5" /> 新产品
+                        </button>
+                    </>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-6 pt-2">
+                {categories.map(cat => {
+                  const catProds = filteredProducts.filter(p => String(p.categoryId) === String(cat.id));
+                  if (catProds.length === 0) return null;
+                  return (
+                    <div key={cat.id} className="space-y-3">
+                      <h4 className="flex items-center gap-2 text-[10px] lg:text-xs font-bold text-slate-400 tracking-widest ml-1">
+                        <span>{cat.name}</span>
+                        <span className="h-[1px] flex-1 bg-slate-200"></span>
+                      </h4>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-8 2xl:grid-cols-10 gap-2 lg:gap-3">
+                        {catProds.map(prod => {
+                          const count = items.filter(i => String(i.productId) === String(prod.id)).reduce((s, i) => s + i.quantity, 0);
+                          const isSelected = selectedProductIds.includes(String(prod.id));
+                          return (
+                            <div 
+                              key={prod.id}
+                              onClick={() => { setSelectedProductId(String(prod.id)); setView('PRODUCT_DETAIL'); }}
+                              className={`group relative cursor-pointer overflow-hidden rounded-xl border p-2.5 lg:p-3.5 flex flex-col justify-between transition-all hover:-translate-y-0.5 hover:shadow-md lg:aspect-square ${isSelected ? 'bg-amber-50/50 border-amber-400 shadow-sm' : 'bg-white border-slate-200 hover:border-amber-300 shadow-sm'}`}
+                            >
+                              <div onClick={(e) => toggleSelectProduct(e, String(prod.id))} className="absolute top-1.5 left-1.5 lg:top-2.5 lg:left-2.5 z-20 text-slate-300 hover:text-amber-500">
+                                {/* 🚀 核心优化：复选框放大到 w-6 h-6 */}
+                                {isSelected ? <CheckSquare className="w-6 h-6 text-amber-500" /> : <Square className="w-6 h-6" />}
+                              </div>
+                              
+                              {isOwnerOrLegacy && (
+                                <button onClick={(e) => confirmDeleteProduct(e, Number(prod.id), prod.name)} className="absolute top-0.5 right-0.5 lg:top-1 lg:right-1 p-1.5 rounded-lg text-slate-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100 z-10">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              
+                              <div className="flex-1 flex flex-col justify-center items-center text-center mt-3 lg:mt-5 px-1 lg:px-2">
+                                <h3 className="text-[13px] lg:text-lg font-black text-slate-800 leading-snug lg:leading-tight group-hover:text-amber-600 transition-colors line-clamp-2">{prod.name}</h3>
+                              </div>
+
+                              <div className="flex items-end justify-between pt-2 border-t border-slate-100 mt-2">
+                                <div className="flex items-baseline gap-0.5">
+                                  <span className={`text-xl lg:text-2xl font-black tabular-nums leading-none ${count > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
+                                    {count}
+                                  </span>
+                                  <span className="text-[8px] lg:text-[9px] text-slate-400 font-bold mb-0.5">件</span>
+                                </div>
+                                <ArrowRight className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-slate-200 group-hover:text-amber-500 transition-colors mb-0.5" />
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
+          </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-right-8 duration-300">
+              <div className="flex flex-col md:flex-row md:items-center gap-3 lg:gap-4 mb-4 lg:mb-6 bg-white p-3 lg:p-4 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-3">
+                    {/* 🚀 核心优化：返回箭头超级加长 */}
+                    <button onClick={() => setView('DASHBOARD')} className="w-24 h-10 px-4 flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200 text-slate-500 font-bold text-xs hover:text-amber-600 hover:bg-amber-50 transition-all shrink-0 shadow-sm">
+                      <ArrowDownLeft className="h-5 w-5 mr-1" /> 返回
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <h1 className="text-xl lg:text-2xl font-black text-slate-800 tracking-tight leading-none truncate">{activeProduct?.name}</h1>
+                      <span className="inline-block mt-1.5 px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-bold border border-amber-100">{activeCategory?.name}</span>
+                    </div>
+                </div>
+                {isOwnerOrLegacy && (
+                    <button onClick={() => setIsAddItemOpen(true)} className="w-full md:w-auto px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md flex items-center justify-center gap-1.5 whitespace-nowrap">
+                      <Plus className="h-4 w-4" /> 办理入库
+                    </button>
+                )}
+              </div>
+              
+              <StockGrid title="已上架库存" data={listedItems} colorClass="text-emerald-600" icon={Store} />
+              <StockGrid title="仓库储备 (未上架)" data={unlistedItems} colorClass="text-slate-500" icon={Archive} />
+          </div>
+        )}
       </div>
+      )}
     </Layout>
   );
 };

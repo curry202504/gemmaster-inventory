@@ -42,22 +42,56 @@ if (fs.existsSync(distPath)) {
 // 缓存验证码
 const verificationCodes = new Map();
 
-// JWT 身份核验中间件
+// ==========================================
+// 🚀 核心权限管控中心 (身份认证 + VIP 实时拦截 + 员工权限隔离)
+// ==========================================
 const authenticate = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: '请先登录' });
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    // 实时从数据库查验身份，防止篡改
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(decoded.id);
+    if (!user) return res.status(401).json({ error: '用户不存在或已被删除' });
+
+    const ownerId = user.role === 'EMPLOYEE' ? user.parent_id : user.id;
+    const owner = db.prepare('SELECT vip_expiry FROM users WHERE id = ?').get(ownerId);
+    
+    // 组装无懈可击的用户上下文
+    req.user = {
+        id: user.id,
+        username: user.username,
+        phone: user.phone,
+        role: user.role || 'OWNER',
+        ownerId: ownerId,
+        isVip: owner && owner.vip_expiry > Date.now() // 实时判定毫秒级过期
+    };
     next();
   } catch (e) {
     return res.status(403).json({ error: '登录失效，请重新登录' });
   }
 };
 
+// 守卫1：拦截已到期的账户
+const requireVip = (req, res, next) => {
+    if (!req.user.isVip) {
+        return res.status(403).json({ error: 'VIP_EXPIRED' });
+    }
+    next();
+};
+
+// 守卫2：拦截员工越权写入
+const requireOwner = (req, res, next) => {
+    if (req.user.role === 'EMPLOYEE') {
+        return res.status(403).json({ error: 'EMPLOYEE_DENIED', message: '员工账号仅限查看和导出流水，无权增删改查！' });
+    }
+    next();
+};
+
 // ==========================================
-// 1. 用户与认证模块
+// 1. 用户与认证模块 (不受 VIP 限制)
 // ==========================================
 app.post('/api/send-code', async (req, res) => {
   try {
@@ -95,7 +129,7 @@ app.post('/api/register', (req, res) => {
   if (Date.now() > record.expiresAt) return res.status(400).json({ error: '验证码已失效' });
   
   const hash = bcrypt.hashSync(password, 10);
-  // 新用户默认赠送 3 天体验期
+  // 新用户严格赠送真实 3 天体验期
   const threeDaysLater = Date.now() + (3 * 24 * 60 * 60 * 1000);
 
   try {
@@ -172,17 +206,15 @@ app.post('/api/reset-password', (req, res) => {
 });
 
 // ==========================================
-// 2. 员工管理模块 (SaaS 多租户)
+// 2. 员工管理模块 (必须是 VIP 才能访问)
 // ==========================================
-app.get('/api/employees', authenticate, (req, res) => {
+app.get('/api/employees', authenticate, requireVip, (req, res) => {
   if (req.user.role !== 'OWNER') return res.status(403).json({ error: '仅主账号可查看员工' });
   const employees = db.prepare("SELECT id, username, phone, created_at FROM users WHERE parent_id = ? AND role = 'EMPLOYEE'").all(req.user.id);
   res.json(employees);
 });
 
-app.post('/api/employees', authenticate, (req, res) => {
-  if (req.user.role !== 'OWNER') return res.status(403).json({ error: '仅主账号可添加员工' });
-  
+app.post('/api/employees', authenticate, requireVip, requireOwner, (req, res) => {
   // 必须是年费 VIP 才允许添加员工
   const owner = db.prepare('SELECT vip_expiry FROM users WHERE id = ?').get(req.user.id);
   if (!owner || owner.vip_expiry <= Date.now()) {
@@ -201,18 +233,16 @@ app.post('/api/employees', authenticate, (req, res) => {
   }
 });
 
-app.delete('/api/employees/:id', authenticate, (req, res) => {
-  if (req.user.role !== 'OWNER') return res.status(403).json({ error: '无权操作' });
+app.delete('/api/employees/:id', authenticate, requireVip, requireOwner, (req, res) => {
   db.prepare('DELETE FROM users WHERE id = ? AND parent_id = ?').run(req.params.id, req.user.id);
   res.json({ success: true });
 });
 
 // ==========================================
-// 3. 核心库存管理模块
+// 3. 核心库存管理模块 (读取需 VIP，写入需 Owner+VIP)
 // ==========================================
-app.get('/api/categories', authenticate, (req, res) => {
+app.get('/api/categories', authenticate, requireVip, (req, res) => {
   let categories = db.prepare('SELECT * FROM categories WHERE user_id = ?').all(req.user.ownerId);
-  // 如果没有任何分类，触发兜底初始化
   if (categories.length === 0) {
      initUserCategories(req.user.ownerId);
      categories = db.prepare('SELECT * FROM categories WHERE user_id = ?').all(req.user.ownerId);
@@ -220,24 +250,24 @@ app.get('/api/categories', authenticate, (req, res) => {
   res.json(categories.map(c => ({ ...c, fields: JSON.parse(c.fields) })));
 });
 
-app.get('/api/products', authenticate, (req, res) => {
+app.get('/api/products', authenticate, requireVip, (req, res) => {
   const products = db.prepare('SELECT * FROM products WHERE user_id = ?').all(req.user.ownerId);
   res.json(products.map(p => ({
     id: p.id, name: p.name, categoryId: p.category_id, createdAt: p.created_at
   })));
 });
 
-app.get('/api/items', authenticate, (req, res) => {
+app.get('/api/items', authenticate, requireVip, (req, res) => {
   const items = db.prepare('SELECT * FROM stock_items WHERE user_id = ?').all(req.user.ownerId);
   res.json(items.map(i => ({
     id: i.id, productId: i.product_id, quantity: i.quantity, customValues: JSON.parse(i.custom_values), listingStatus: i.listing_status, updatedAt: i.updated_at
   })));
 });
 
-app.post('/api/products', authenticate, (req, res) => {
+// 以下均为高危操作，全部叠加 requireOwner 限制员工
+app.post('/api/products', authenticate, requireVip, requireOwner, (req, res) => {
   const { name, categoryId } = req.body;
   const userId = req.user.ownerId; 
-  // 防止同名产品
   const existing = db.prepare('SELECT id FROM products WHERE name = ? AND category_id = ? AND user_id = ?').get(name, categoryId, userId);
   if (existing) return res.status(400).json({ error: '产品已存在' });
   
@@ -245,8 +275,7 @@ app.post('/api/products', authenticate, (req, res) => {
   res.json({ id: info.lastInsertRowid, name, categoryId });
 });
 
-app.delete('/api/products/:id', authenticate, (req, res) => {
-  if (req.user.role !== 'OWNER') return res.status(403).json({error: '无权删除'});
+app.delete('/api/products/:id', authenticate, requireVip, requireOwner, (req, res) => {
   const productId = req.params.id;
   const userId = req.user.ownerId;
   db.prepare('DELETE FROM stock_items WHERE product_id = ?').run(productId);
@@ -254,8 +283,7 @@ app.delete('/api/products/:id', authenticate, (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/products/bulk-delete', authenticate, (req, res) => {
-  if (req.user.role !== 'OWNER') return res.status(403).json({error: '无权删除，请联系管理员'});
+app.post('/api/products/bulk-delete', authenticate, requireVip, requireOwner, (req, res) => {
   const { productIds } = req.body;
   const userId = req.user.ownerId;
   if (!Array.isArray(productIds)) return res.status(400).json({error: '参数错误'});
@@ -264,7 +292,6 @@ app.post('/api/products/bulk-delete', authenticate, (req, res) => {
     const deleteItems = db.prepare('DELETE FROM stock_items WHERE product_id = ?');
     const deleteProd = db.prepare('DELETE FROM products WHERE id = ? AND user_id = ?');
     
-    // 开启事务，保证批量删除的一致性
     const runTx = db.transaction((ids) => {
       for(let id of ids) {
         deleteItems.run(id);
@@ -278,33 +305,29 @@ app.post('/api/products/bulk-delete', authenticate, (req, res) => {
   }
 });
 
-app.post('/api/items', authenticate, (req, res) => {
+app.post('/api/items', authenticate, requireVip, requireOwner, (req, res) => {
   const { productId, customValues, listingStatus } = req.body;
   const valStr = JSON.stringify(customValues);
   const userId = req.user.ownerId; 
   
   let itemId = 0;
-  // 查找是否已有完全相同规格的库存记录
   const existing = db.prepare('SELECT * FROM stock_items WHERE product_id = ? AND custom_values = ? AND listing_status = ? AND user_id = ?').get(productId, valStr, listingStatus, userId);
 
   if (existing) {
-    // 有就只加数量
     db.prepare('UPDATE stock_items SET quantity = quantity + 1, updated_at = ? WHERE id = ?').run(Date.now(), existing.id);
     itemId = existing.id;
   } else {
-    // 没有就新建一条记录
     const info = db.prepare('INSERT INTO stock_items (user_id, product_id, quantity, custom_values, listing_status, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(userId, productId, 1, valStr, listingStatus, Date.now());
     itemId = info.lastInsertRowid;
   }
 
-  // 记录流水
   const weight = Number(customValues.weight) || 0;
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(userId, productId, itemId, 'IN', 1, weight, Date.now(), valStr);
   
   res.json({ success: true, action: 'increment' });
 });
 
-app.post('/api/items/outbound', authenticate, (req, res) => {
+app.post('/api/items/outbound', authenticate, requireVip, requireOwner, (req, res) => {
   const { itemId } = req.body;
   const userId = req.user.ownerId;
 
@@ -317,7 +340,6 @@ app.post('/api/items/outbound', authenticate, (req, res) => {
     db.prepare('UPDATE stock_items SET quantity = quantity - 1, updated_at = ? WHERE id = ?').run(Date.now(), itemId);
   }
 
-  // 记录出库流水
   const vals = JSON.parse(item.custom_values);
   const weight = Number(vals.weight) || 0;
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(userId, item.product_id, itemId, 'OUT', 1, weight, Date.now(), item.custom_values);
@@ -325,7 +347,8 @@ app.post('/api/items/outbound', authenticate, (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/bulk-import', authenticate, (req, res) => {
+// 完美修复：批量导入表格增加数量累加功能
+app.post('/api/bulk-import', authenticate, requireVip, requireOwner, (req, res) => {
   const { categoryId, items } = req.body;
   const userId = req.user.ownerId;
   if (!categoryId || !Array.isArray(items) || items.length === 0) return res.status(400).json({ error: '无效的数据格式' });
@@ -351,20 +374,25 @@ app.post('/api/bulk-import', authenticate, (req, res) => {
             const customValues = { weight: row.weight || '0' };
             if(row.size) customValues.size = row.size; 
             const valStr = JSON.stringify(customValues);
-            const weightNum = Number(row.weight) || 0;
             
+            // 核心修复：解析表格传来的 quantity (没传默认为 1)
+            const qtyNum = parseInt(row.quantity) || 1;
+            const weightNum = Number(row.weight) || 0;
             const status = (row.status === '已上架' || row.status === '上架') ? 'LISTED' : 'UNLISTED';
 
             let item = db.prepare('SELECT * FROM stock_items WHERE product_id = ? AND custom_values = ? AND listing_status = ? AND user_id = ?').get(prodId, valStr, status, userId);
             let itemId;
             if(item) {
-                db.prepare('UPDATE stock_items SET quantity = quantity + 1, updated_at = ? WHERE id = ?').run(Date.now(), item.id);
+                // 如果存在，直接累加表格传来的数量！
+                db.prepare('UPDATE stock_items SET quantity = quantity + ?, updated_at = ? WHERE id = ?').run(qtyNum, Date.now(), item.id);
                 itemId = item.id;
             } else {
-                const iInfo = insertItem.run(userId, prodId, 1, valStr, status, Date.now());
+                // 如果不存在，按照表格传入的数量直接建库！
+                const iInfo = insertItem.run(userId, prodId, qtyNum, valStr, status, Date.now());
                 itemId = iInfo.lastInsertRowid;
             }
-            insertMove.run(userId, prodId, itemId, 'IN', 1, weightNum, Date.now(), valStr);
+            // 写入流水，流水包含对应的入库数量，流水里的重量是单件重量*数量
+            insertMove.run(userId, prodId, itemId, 'IN', qtyNum, weightNum * qtyNum, Date.now(), valStr);
         }
     });
     
@@ -379,7 +407,7 @@ app.post('/api/bulk-import', authenticate, (req, res) => {
 // ==========================================
 // 4. 数据报表模块
 // ==========================================
-app.post('/api/reports/flow', authenticate, (req, res) => {
+app.post('/api/reports/flow', authenticate, requireVip, (req, res) => {
   const { startDate, endDate } = req.body; 
   const userId = req.user.ownerId;
 
@@ -411,44 +439,57 @@ app.post('/api/reports/flow', authenticate, (req, res) => {
   }
 });
 
+// 🚀 时光机：精准盘点历史任意一天结束时的库存结余
+app.post('/api/reports/historical-inventory', authenticate, requireVip, (req, res) => {
+  const { date } = req.body; // 这个 date 是那一天的 23:59:59.999 的时间戳
+  const userId = req.user.ownerId;
+  
+  try {
+    // 算法引擎：基于流水正负相加演算，完美复原历史任何时刻的结余！
+    const items = db.prepare(`
+        SELECT 
+          product_id, 
+          custom_values, 
+          SUM(CASE WHEN type = 'IN' THEN quantity ELSE -quantity END) as calc_qty
+        FROM stock_movements
+        WHERE user_id = ? AND timestamp <= ?
+        GROUP BY product_id, custom_values
+        HAVING calc_qty > 0
+    `).all(userId, date);
+
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: '历史盘点演算失败' });
+  }
+});
+
 // ==========================================
-// 5. 支付路由
+// 5. 支付路由 (自己买单，不受 VIP 过期影响)
 // ==========================================
 app.post('/api/pay/create', authenticate, async (req, res) => {
   if (req.user.role !== 'OWNER') return res.status(403).json({error: '子账号不可支付'});
   try {
     const { planId, isMobile } = req.body; 
-    // 调用 PaymentService 生成订单链接
     const { orderId, amount, payUrl } = await PaymentService.createPayment(req.user.ownerId, planId, isMobile);
-    // 把这条“待支付”的订单写进数据库记录
     db.prepare('INSERT INTO orders (id, user_id, amount, product_name, created_at, status) VALUES (?, ?, ?, ?, ?, ?)').run(orderId, req.user.ownerId, amount, planId, Date.now(), 'PENDING');
     
     res.json({ payUrl });
   } catch (e) {
-    console.error("发起支付失败:", e);
     res.status(500).json({ error: e.message || '支付系统对接异常' }); 
   }
 });
 
-// 支付宝异步回调：用户付完钱后，支付宝会来敲这个门
 app.post('/api/alipay-notify', (req, res) => {
   const params = req.body;
   if (params.trade_status === 'TRADE_SUCCESS') {
     const orderId = params.out_trade_no;
-    // 找出这笔订单
     const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
-    
-    // 如果订单存在且没处理过，就开始“发货”
     if (order && order.status === 'PENDING') {
       db.prepare("UPDATE orders SET status = 'PAID', paid_at = ? WHERE id = ?").run(Date.now(), orderId);
-      
       const duration = order.product_name === 'plan_year' ? (366 * 86400000) : (31 * 86400000);
-      
-      // 更新用户的 VIP 时长：如果没过期就在原来基础上加，如果过期了就从现在开始加
       db.prepare('UPDATE users SET vip_expiry = CASE WHEN vip_expiry > ? THEN vip_expiry + ? ELSE ? + ? END WHERE id = ?').run(Date.now(), duration, Date.now(), duration, order.user_id);
     }
   }
-  // 必须返回 success 告诉支付宝“我收到了”，不然它会一直重发
   res.send('success');
 });
 
