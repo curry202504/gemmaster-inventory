@@ -79,3 +79,5 @@ server/data/database.sqlite-wal
 *.sqlite
 *.sqlite-*
 # ---------------------------------------------------
+server/data/database.sqlite
+server/data/database.sqlite-*

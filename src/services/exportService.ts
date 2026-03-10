@@ -1,5 +1,5 @@
 // 文件名: src/services/exportService.ts
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
 import { Product, StockItem, Category } from '../types';
 
@@ -128,7 +128,6 @@ export const generateDailyFlowReport = async (logs: any[], reportTitle: string =
         const actionStr = log.type === 'IN' ? '【入库】' : '【出库】';
         const color = log.type === 'IN' ? '2e7d32' : 'd32f2f'; 
         
-        // 【核心】：尝试解析存储在库里的规格快照，提取出圈口信息
         let detailStr = `(单件 ${log.weight}g)`;
         if (log.custom_values && log.custom_values !== '{}') {
            try {
@@ -143,7 +142,6 @@ export const generateDailyFlowReport = async (logs: any[], reportTitle: string =
             children: [
               new TextRun({ text: `${time}  `, color: "757575", size: 24 }),
               new TextRun({ text: `${actionStr}  `, color, bold: true, size: 24 }),
-              // 将提取出的 detailStr 打印到 Word 里
               new TextRun({ text: `${log.product_name || '未知商品'} - ${log.quantity}件 ${detailStr}`, size: 24 })
             ],
             spacing: { after: 120 }
@@ -161,3 +159,96 @@ export const generateDailyFlowReport = async (logs: any[], reportTitle: string =
     throw new Error('生成流水报告失败');
   }
 };
+
+// 🚀 全新引擎：生成历史结余的精美 Word 盘点表
+export const generateHistoricalInventoryReport = async (data: any[], dateStr: string, products: Product[]) => {
+    try {
+      const children: any[] = [];
+  
+      children.push(
+        new Paragraph({
+          text: `系统库存盘点结余报告 (时光机演算)`,
+          heading: HeadingLevel.HEADING_1,
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 200 },
+        }),
+        new Paragraph({
+          children: [
+            new TextRun({ text: `盘点溯源基准日期：${dateStr} 23:59:59`, color: "d32f2f", bold: true }),
+            new TextRun({ text: `\n注：本表数据由系统底层出入库流水精准逆向推演生成，真实反映该时刻的理论结余。`, color: "757575", size: 20 })
+          ],
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 400 },
+        })
+      );
+  
+      if (data.length === 0) {
+        children.push(new Paragraph({ text: "所选日期未查询到任何有效库存结余。" }));
+      } else {
+        // 创建一个美观的表格
+        const tableRows = [
+          new TableRow({
+            children: [
+              new TableCell({ children: [new Paragraph({ text: "商品名称", alignment: AlignmentType.CENTER })], width: { size: 35, type: WidthType.PERCENTAGE } }),
+              new TableCell({ children: [new Paragraph({ text: "规格详情", alignment: AlignmentType.CENTER })], width: { size: 45, type: WidthType.PERCENTAGE } }),
+              new TableCell({ children: [new Paragraph({ text: "历史结余数量", alignment: AlignmentType.CENTER })], width: { size: 20, type: WidthType.PERCENTAGE } }),
+            ],
+          }),
+        ];
+  
+        let totalPieces = 0;
+
+        data.forEach(row => {
+          const prodName = products.find(p => String(p.id) === String(row.product_id))?.name || '未知产品';
+          let specStr = '-';
+          try {
+              const cv = JSON.parse(row.custom_values || '{}');
+              const s = cv.size ? `圈口:${cv.size} ` : '';
+              const w = cv.weight ? `克重:${cv.weight}g` : '';
+              specStr = s + w;
+          } catch(e) {}
+          
+          const qty = Number(row.calc_qty);
+          totalPieces += qty;
+  
+          tableRows.push(
+            new TableRow({
+              children: [
+                new TableCell({ children: [new Paragraph(prodName)] }),
+                new TableCell({ children: [new Paragraph(specStr)] }),
+                new TableCell({ children: [new Paragraph({ text: `${qty} 件`, alignment: AlignmentType.CENTER })] }),
+              ],
+            })
+          );
+        });
+  
+        children.push(
+            new Table({
+                rows: tableRows,
+                width: { size: 100, type: WidthType.PERCENTAGE },
+            }),
+            new Paragraph({
+                children: [
+                  new TextRun({ text: `\n总计历史库存件数：${totalPieces} 件`, bold: true, size: 28, color: "1976d2" })
+                ],
+                spacing: { before: 400, after: 800 },
+                alignment: AlignmentType.RIGHT
+            }),
+            new Paragraph({
+                children: [
+                  new TextRun({ text: `盘点人签字：____________________      日期：____________________` })
+                ],
+                alignment: AlignmentType.RIGHT
+            })
+        );
+      }
+  
+      const doc = new Document({ sections: [{ children }] });
+      const blob = await Packer.toBlob(doc);
+      saveAs(blob, `历史库存盘点表_${dateStr}.docx`);
+  
+    } catch (error) {
+      console.error(error);
+      throw new Error('生成历史盘点报告失败');
+    }
+  };

@@ -95,7 +95,7 @@ const requireOwner = (req, res, next) => {
 // ==========================================
 app.post('/api/send-code', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const phone = String(req.body.phone || '').trim();
     if (!phone) return res.status(400).json({ error: '手机号必填' });
     
     // 简单的频控：1分钟内不能重复发送
@@ -121,7 +121,10 @@ app.post('/api/send-code', async (req, res) => {
 });
 
 app.post('/api/register', (req, res) => {
-  const { phone, username, password, code } = req.body;
+  const phone = String(req.body.phone || '').trim();
+  const username = String(req.body.username || '').trim();
+  const password = String(req.body.password || '').trim();
+  const { code } = req.body;
   const record = verificationCodes.get(phone);
   
   if (!record) return res.status(400).json({ error: '请先获取验证码' });
@@ -146,7 +149,11 @@ app.post('/api/register', (req, res) => {
 
 app.post('/api/login', (req, res) => {
   try {
-    const { phone, password } = req.body;
+    const phone = String(req.body.phone || '').trim();
+    const password = String(req.body.password || '').trim();
+
+    if (!phone) return res.status(400).json({ error: '请输入手机号' });
+
     const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
     if (!user) return res.status(400).json({ error: '手机号未注册，请先注册！' });
 
@@ -186,7 +193,9 @@ app.post('/api/login', (req, res) => {
 });
 
 app.post('/api/reset-password', (req, res) => {
-  const { phone, code, newPassword } = req.body;
+  const phone = String(req.body.phone || '').trim();
+  const newPassword = String(req.body.newPassword || '').trim();
+  const { code } = req.body;
   if (!phone || !code || !newPassword) return res.status(400).json({ error: '参数不全' });
 
   const record = verificationCodes.get(phone);
@@ -217,11 +226,14 @@ app.get('/api/employees', authenticate, requireVip, (req, res) => {
 app.post('/api/employees', authenticate, requireVip, requireOwner, (req, res) => {
   // 必须是年费 VIP 才允许添加员工
   const owner = db.prepare('SELECT vip_expiry FROM users WHERE id = ?').get(req.user.id);
-  if (!owner || owner.vip_expiry <= Date.now()) {
+  if (!owner || owner.vip_expiry - Date.now() < (30 * 24 * 60 * 60 * 1000 * 3)) {
      return res.status(403).json({ error: '仅 PRO 年度会员可创建员工子终端' });
   }
 
-  const { phone, username, password } = req.body;
+  const phone = String(req.body.phone || '').trim();
+  const username = String(req.body.username || '').trim();
+  const password = String(req.body.password || '').trim();
+
   if (!phone || !username || !password) return res.status(400).json({ error: '信息不全' });
 
   const hash = bcrypt.hashSync(password, 10);
@@ -273,6 +285,21 @@ app.post('/api/products', authenticate, requireVip, requireOwner, (req, res) => 
   
   const info = db.prepare('INSERT INTO products (user_id, name, category_id, created_at) VALUES (?, ?, ?, ?)').run(userId, name, categoryId, Date.now());
   res.json({ id: info.lastInsertRowid, name, categoryId });
+});
+
+// 🚀 新增接口：修改品名
+app.put('/api/products/:id', authenticate, requireVip, requireOwner, (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: '品名不能为空' });
+  
+  const prod = db.prepare('SELECT category_id FROM products WHERE id = ? AND user_id = ?').get(req.params.id, req.user.ownerId);
+  if (!prod) return res.status(404).json({ error: '产品不存在' });
+  
+  const existing = db.prepare('SELECT id FROM products WHERE name = ? AND category_id = ? AND user_id = ? AND id != ?').get(name.trim(), prod.category_id, req.user.ownerId, req.params.id);
+  if (existing) return res.status(400).json({ error: '该分类下已存在同名产品' });
+
+  db.prepare('UPDATE products SET name = ? WHERE id = ? AND user_id = ?').run(name.trim(), req.params.id, req.user.ownerId);
+  res.json({ success: true });
 });
 
 app.delete('/api/products/:id', authenticate, requireVip, requireOwner, (req, res) => {
@@ -345,6 +372,31 @@ app.post('/api/items/outbound', authenticate, requireVip, requireOwner, (req, re
   db.prepare('INSERT INTO stock_movements (user_id, product_id, item_id, type, quantity, weight, timestamp, custom_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(userId, item.product_id, itemId, 'OUT', 1, weight, Date.now(), item.custom_values);
   
   res.json({ success: true });
+});
+
+// 🚀 新增接口：切换上下架状态 (包含智能同规格合并)
+app.put('/api/items/:id/toggle-status', authenticate, requireVip, requireOwner, (req, res) => {
+  const item = db.prepare('SELECT * FROM stock_items WHERE id = ? AND user_id = ?').get(req.params.id, req.user.ownerId);
+  if (!item) return res.status(404).json({ error: '库存记录不存在' });
+  
+  const newStatus = item.listing_status === 'LISTED' ? 'UNLISTED' : 'LISTED';
+
+  // 检查目标状态是否已经存在同款同规格的数据
+  const duplicate = db.prepare('SELECT id, quantity FROM stock_items WHERE product_id = ? AND custom_values = ? AND listing_status = ? AND user_id = ? AND id != ?')
+                      .get(item.product_id, item.custom_values, newStatus, req.user.ownerId, item.id);
+
+  if (duplicate) {
+      // 如果存在，把数量合并过去，并删除当前记录
+      const runTx = db.transaction(() => {
+          db.prepare('UPDATE stock_items SET quantity = quantity + ?, updated_at = ? WHERE id = ?').run(item.quantity, Date.now(), duplicate.id);
+          db.prepare('DELETE FROM stock_items WHERE id = ?').run(item.id);
+      });
+      runTx();
+  } else {
+      // 如果不存在同规格，直接改状态
+      db.prepare('UPDATE stock_items SET listing_status = ?, updated_at = ? WHERE id = ?').run(newStatus, Date.now(), item.id);
+  }
+  res.json({ success: true, newStatus });
 });
 
 // 完美修复：批量导入表格增加数量累加功能
